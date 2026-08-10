@@ -36,8 +36,12 @@ const AILERON_MESH_RE = /^polySurface(161|165|173|174|407|408|410|411)_/;
 // Половины горизонтального оперения. Своих контурных оболочек у них нет —
 // контур хвоста входит в общую оболочку polySurface308_Tooner_0.
 const ELEVATOR_MESH_RE = /^polySurface(200|292)_/;
-// Спаренный пулемёт заднего стрелка на кольцевой турели.
-const GUN_MESH_RE = /^polySurface(231|232|233|234|235|236|237|238)_/;
+// Спаренный пулемёт заднего стрелка на кольцевой турели. Кроме самих стволов
+// (231-238) сюда входят наконечники с мушками (239-242) и стойки крепления
+// (195, 199): без них эти части оставались стоять на месте при наводке, а их
+// контур висел в воздухе чёрными силуэтами. Кольцо кабины (227, 228) и его
+// детали (229, 230) неподвижны и в турель не входят.
+const GUN_MESH_RE = /^polySurface(195|199|231|232|233|234|235|236|237|238|239|240|241|242)_/;
 const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(120);
 const GUN_PITCH_MIN = THREE.MathUtils.degToRad(-25);
 const GUN_PITCH_MAX = THREE.MathUtils.degToRad(70);
@@ -380,18 +384,15 @@ export class Plane {
       return;
     }
 
-    // Контур пулемёта из общей оболочки вырезаем и ВЫБРАСЫВАЕМ, а не возим
-    // вместе со стволами: оболочка раздута почти на полметра, вокруг мелких
-    // стволов она превращается в бесформенный ком и при наводке разлетается
-    // чёрными осколками. Оставить её на месте тоже нельзя — повиснет в воздухе.
+    // Контур пулемёта живёт в общей оболочке фюзеляжа: вырезаем его кусок и
+    // вешаем на турель, чтобы он ездил вместе со стволами. Оставить на месте
+    // нельзя — повиснет в воздухе чёрным силуэтом, как только стволы отведут.
     const parts = [...meshes];
     const hull = model.getObjectByName(HULL_OUTLINE_NAME);
     if (hull) {
       const outline = extractOutlineFor(hull, model, meshes, this.solidMeshes);
-      if (outline !== null) {
-        outline.removeFromParent();
-        outline.geometry.dispose();
-      }
+      if (outline !== null) parts.push(outline);
+      else console.warn('PlaneSimulator: контур пулемёта не выделен — останется на месте');
     }
 
     const center = unionBox(meshes).getCenter(new THREE.Vector3());
