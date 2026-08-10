@@ -10,6 +10,9 @@ const STANCE_PITCH = THREE.MathUtils.degToRad(-8);  // парковочный т
 
 const PROP_MAX_SPEED = 40;            // рад/с (~6.4 об/с)
 const PROP_ACCEL = 18;                // рад/с^2 — плавная раскрутка и торможение
+// Ось винта — +Z модели (нос). Положительное вращение вокруг неё выглядит
+// спереди против часовой стрелки, а нужно по часовой — отсюда знак.
+const PROP_DIRECTION = -1;
 const TWO_PI = Math.PI * 2;
 
 // --- Управляющие поверхности ---
@@ -508,7 +511,7 @@ export class Plane {
         : Math.max(0, this.propSpeed - PROP_ACCEL * dt);
       // Угол держим в пределах оборота: за часы работы накопленное значение
       // теряет точность и вращение становится рваным.
-      this.propAngle = (this.propAngle + this.propSpeed * dt) % TWO_PI;
+      this.propAngle = (this.propAngle + PROP_DIRECTION * this.propSpeed * dt) % TWO_PI;
       this.propPivot.rotation.z = this.propAngle;
     }
 

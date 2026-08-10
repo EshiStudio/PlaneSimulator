@@ -28,6 +28,15 @@ plane.load('../assets/stylized_ww1_plane.glb').then(() => {
   const box = new THREE.Box3().setFromObject(plane.group);
   log(`bbox: y ${box.min.y.toFixed(3)}..${box.max.y.toFixed(3)}, размах ${(box.max.x - box.min.x).toFixed(2)} м`);
 
+  // Винт: раскрутка и направление вращения.
+  plane.engineOn = true;
+  run(1);
+  log(`двигатель 1 с: ${plane.propSpeed.toFixed(1)} рад/с, угол=${plane.propAngle.toFixed(2)} ` +
+      `(должен быть ОТРИЦАТЕЛЬНЫМ и по модулю < 6.29)`);
+  plane.engineOn = false;
+  run(3);
+  log(`заглушили: ${plane.propSpeed.toFixed(1)} рад/с (ожидается 0)`);
+
   const right = plane.ailerons.find(s => s.side === 'R');
   const left = plane.ailerons.find(s => s.side === 'L');
 
