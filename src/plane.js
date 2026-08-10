@@ -36,6 +36,12 @@ const AILERON_MESH_RE = /^polySurface(161|165|173|174|407|408|410|411)_/;
 // Половины горизонтального оперения. Своих контурных оболочек у них нет —
 // контур хвоста входит в общую оболочку polySurface308_Tooner_0.
 const ELEVATOR_MESH_RE = /^polySurface(200|292)_/;
+// Спаренный пулемёт заднего стрелка на кольцевой турели.
+const GUN_MESH_RE = /^polySurface(231|232|233|234|235|236|237|238)_/;
+const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(120);
+const GUN_PITCH_MIN = THREE.MathUtils.degToRad(-25);
+const GUN_PITCH_MAX = THREE.MathUtils.degToRad(70);
+
 const HULL_OUTLINE_NAME = 'polySurface308_Tooner_0';
 const FIN_MESH_RE = /^polySurface201_/;
 // Зона стыка киля с оперением. Контур внутри неё в нейтрали закрыт панелями, а
@@ -278,6 +284,8 @@ export class Plane {
 
     this.ailerons = [];           // крыльевые панели: крен
     this.elevators = [];          // половины оперения: тангаж
+    this.gunYaw = null;           // турель стрелка: курс
+    this.gunPitch = null;         // и возвышение
     this.aileronAngle = 0;
     this.elevatorAngle = 0;
 
@@ -354,6 +362,55 @@ export class Plane {
     this.#buildPropeller(model);
     this.#buildAilerons(model);
     this.#buildElevator(model);
+    this.#buildGun(model);
+  }
+
+  /**
+   * Пулемёт стрелка на двух узлах: внешний вращает по курсу, вложенный по
+   * возвышению. Контур пулемёта, как и у хвоста, живёт в общей оболочке —
+   * вырезаем его, иначе при наводке он останется висеть на месте.
+   */
+  #buildGun(model) {
+    const meshes = [];
+    model.traverse(node => {
+      if (node.isMesh && GUN_MESH_RE.test(node.name)) meshes.push(node);
+    });
+    if (meshes.length === 0) {
+      console.warn('PlaneSimulator: пулемёт не найден — наводка работать не будет');
+      return;
+    }
+
+    // Контур пулемёта из общей оболочки вырезаем и ВЫБРАСЫВАЕМ, а не возим
+    // вместе со стволами: оболочка раздута почти на полметра, вокруг мелких
+    // стволов она превращается в бесформенный ком и при наводке разлетается
+    // чёрными осколками. Оставить её на месте тоже нельзя — повиснет в воздухе.
+    const parts = [...meshes];
+    const hull = model.getObjectByName(HULL_OUTLINE_NAME);
+    if (hull) {
+      const outline = extractOutlineFor(hull, model, meshes, this.solidMeshes);
+      if (outline !== null) {
+        outline.removeFromParent();
+        outline.geometry.dispose();
+      }
+    }
+
+    const center = unionBox(meshes).getCenter(new THREE.Vector3());
+    this.gunYaw = new THREE.Object3D();
+    model.add(this.gunYaw);
+    this.gunYaw.position.copy(model.worldToLocal(center));
+    this.gunPitch = new THREE.Object3D();
+    this.gunYaw.add(this.gunPitch);
+    parts.forEach(part => this.gunPitch.attach(part));
+  }
+
+  /**
+   * Наводка пулемёта. Углы задаются относительно самолёта: 0 — ствол смотрит
+   * назад, в сторону хвоста, куда и обращён стрелок.
+   */
+  aimGun(yaw, pitch) {
+    if (this.gunYaw === null) return;
+    this.gunYaw.rotation.y = THREE.MathUtils.clamp(yaw, -GUN_YAW_LIMIT, GUN_YAW_LIMIT);
+    this.gunPitch.rotation.x = THREE.MathUtils.clamp(pitch, GUN_PITCH_MIN, GUN_PITCH_MAX);
   }
 
   /**

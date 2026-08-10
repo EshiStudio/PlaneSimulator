@@ -29,6 +29,11 @@ plane.load('../assets/stylized_ww1_plane.glb').then(() => {
   const seatZ = parseFloat(params.get('z') ?? SEAT_OFFSET.z);
   character.group.position.set(SEAT_OFFSET.x, seatY, seatZ);
   character.group.rotation.set(0, 0, 0);   // лицом к хвосту, как задний стрелок
+  // Наводка турели в градусах: ?aimyaw= по курсу, ?aimpitch= по высоте.
+  plane.aimGun(
+    THREE.MathUtils.degToRad(parseFloat(params.get('aimyaw') ?? '0')),
+    THREE.MathUtils.degToRad(parseFloat(params.get('aimpitch') ?? '0'))
+  );
   character.update(0.016, null);
   plane.group.updateMatrixWorld(true);
 

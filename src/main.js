@@ -4,7 +4,7 @@ import { scene, camera, renderer, updateGround, updateSun } from './scene.js';
 import { view, updateFirstPersonCamera, viewForward, viewRight } from './camera.js';
 import { Plane } from './plane.js';
 import { Character } from './character.js';
-import { bindInput, walkInput, applyFlightControls, clearFlightControls } from './input.js';
+import { bindInput, walkInput, clearFlightControls } from './input.js';
 import { Hands } from './hands.js';
 import { setStatus, clearStatus } from './status.js';
 import { CHARACTER_HEIGHT, WALK_SPEED, BOARD_DISTANCE, SEAT_OFFSET } from './constants.js';
@@ -61,10 +61,9 @@ function toggleSeat() {
 
 bindInput(renderer.domElement, {
   movePlane: (dx, dz) => {
-    const before = plane.yaw;
+    // Стрелок самолётом не управляет — только пулемётом.
+    if (seated) return;
     plane.move(dx, dz);
-    // Сидя в кабине взгляд разворачивается вместе с машиной.
-    if (seated) view.yaw += plane.yaw - before;
   },
   toggleEngine: () => { plane.engineOn = !plane.engineOn; },
   toggleSeat,
@@ -105,13 +104,13 @@ function surfaceText(angle) {
 function updateHud() {
   const p = plane.group.position;
   if (seated) {
+    const gunYaw = plane.gunYaw === null ? 0 : plane.gunYaw.rotation.y;
+    const gunPitch = plane.gunPitch === null ? 0 : plane.gunPitch.rotation.x;
     hud.textContent =
-      `в кабине   двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}   ` +
-      `руль высоты: ${surfaceText(plane.elevatorAngle)}   ` +
-      `элероны: правый ${surfaceText(plane.aileronAngle)}   ` +
-      `клетка (${plane.cell.x}, ${plane.cell.z})\n` +
-      'W/S — руль высоты | A/D — элероны | стрелки — самолёт по клеткам | ' +
-      'Пробел — двигатель | E — выйти | ЛКМ+мышь — осмотреться';
+      `место стрелка   пулемёт: ${deg(gunYaw)}° по курсу, ${deg(gunPitch)}° по высоте   ` +
+      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}\n` +
+      'ЛКМ+мышь — наводка пулемёта | Пробел — двигатель | E — выйти  ' +
+      '(самолётом стрелок не управляет)';
   } else {
     const c = character.group.position;
     const near = c.distanceTo(p) <= BOARD_DISTANCE;
@@ -129,8 +128,13 @@ function animate() {
 
   const input = walkInput();
   if (seated) {
-    applyFlightControls(plane);
-    // В кабине руки лежат на ручке: без ходьбы и без качания от шага.
+    // Стрелок наводит пулемёт мышью: углы отсчитываются от самолёта, чтобы
+    // наводка не сбивалась, когда машина разворачивается.
+    const relativeYaw = view.yaw - plane.yaw;
+    plane.aimGun(relativeYaw, view.pitch);
+    character.group.rotation.y = relativeYaw;   // корпус и голова следом
+    clearFlightControls(plane);   // поверхности стоят в нейтрали
+    // В кабине руки на пулемёте: без ходьбы и без качания от шага.
     hands.update(dt, { x: 0, y: 0 }, 0);
   } else {
     clearFlightControls(plane);
