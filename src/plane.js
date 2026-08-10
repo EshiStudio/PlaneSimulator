@@ -34,6 +34,14 @@ const AILERON_MESH_RE = /^polySurface(161|165|173|174|407|408|410|411)_/;
 // контур хвоста входит в общую оболочку polySurface308_Tooner_0.
 const ELEVATOR_MESH_RE = /^polySurface(200|292)_/;
 const HULL_OUTLINE_NAME = 'polySurface308_Tooner_0';
+const FIN_MESH_RE = /^polySurface201_/;
+// Зона стыка киля с оперением. Контур внутри неё в нейтрали закрыт панелями, а
+// при отклонении руля торчит наружу чёрным клином, поэтому удаляется совсем.
+// Оболочка раздута примерно на 0.09 в единицах модели, поэтому вниз зона
+// должна уходить заметно глубже самой панели.
+const JUNCTION_SIDE_MARGIN = 0.02;
+const JUNCTION_BELOW = 0.14;
+const JUNCTION_ABOVE = 0.02;
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 
 /** Габариты мешей в собственных координатах модели. */
@@ -137,6 +145,35 @@ function extractOutlineFor(shell, model, targets, candidates) {
   geometry.dispose();
   shell.geometry = remaining;
   return part;
+}
+
+/** Удаляет из оболочки треугольники, чей центр лежит внутри области. */
+function deleteOutlineInside(shell, model, box) {
+  const geometry = shell.geometry;
+  const index = geometry.index;
+  const position = geometry.attributes.position;
+  const toModel = meshToModelMatrix(shell, model);
+  const triangleCount = (index ? index.count : position.count) / 3;
+
+  const kept = [];
+  const v = new THREE.Vector3();
+  const centroid = new THREE.Vector3();
+
+  for (let t = 0; t < triangleCount; t++) {
+    centroid.set(0, 0, 0);
+    for (let corner = 0; corner < 3; corner++) {
+      const i = index ? index.getX(t * 3 + corner) : t * 3 + corner;
+      centroid.add(v.fromBufferAttribute(position, i).applyMatrix4(toModel));
+    }
+    centroid.multiplyScalar(1 / 3);
+    if (!box.containsPoint(centroid)) kept.push(t);
+  }
+
+  if (kept.length === triangleCount) return 0;
+  const remaining = subGeometry(geometry, kept);
+  geometry.dispose();
+  shell.geometry = remaining;
+  return triangleCount - kept.length;
 }
 
 /** Плавное движение значения к цели с ограничением шага. */
@@ -409,10 +446,12 @@ export class Plane {
   #buildElevator(model) {
     const halves = [];
     let hull = null;
+    let fin = null;
     model.traverse(node => {
       if (!node.isMesh) return;
       if (ELEVATOR_MESH_RE.test(node.name)) halves.push(node);
       else if (node.name === HULL_OUTLINE_NAME) hull = node;
+      else if (FIN_MESH_RE.test(node.name)) fin = node;
     });
 
     if (halves.length === 0) {
@@ -429,6 +468,28 @@ export class Plane {
     if (hull !== null) {
       // Соседи-конкуренты за треугольники контура: киль и хвостовая балка
       // должны забрать свои куски, иначе они уедут вместе с рулём.
+      // Сначала убираем контур в стыке киля с оперением: в нейтрали он закрыт
+      // панелями, а при отклонении торчит чёрным клином — причём торчит именно
+      // потому, что уезжает ВМЕСТЕ с рулём. Поэтому удаляем его ДО выделения,
+      // иначе эти треугольники попадут в подвижный кусок.
+      if (fin !== null) {
+        const finBox = localBox([fin], model);
+        const tailBox = localBox(halves, model);
+        const junction = new THREE.Box3(
+          new THREE.Vector3(
+            finBox.min.x - JUNCTION_SIDE_MARGIN,
+            tailBox.min.y - JUNCTION_BELOW,
+            Math.min(finBox.min.z, tailBox.min.z)
+          ),
+          new THREE.Vector3(
+            finBox.max.x + JUNCTION_SIDE_MARGIN,
+            tailBox.max.y + JUNCTION_ABOVE,
+            Math.max(finBox.max.z, tailBox.max.z)
+          )
+        );
+        deleteOutlineInside(hull, model, junction);
+      }
+
       const outline = extractOutlineFor(hull, model, halves, this.solidMeshes);
       if (outline !== null) surfaces.push(outline);
       else console.warn('PlaneSimulator: контур хвоста не выделен — останется на месте');

@@ -31,7 +31,15 @@ plane.load('../assets/stylized_ww1_plane.glb').then(() => {
   }
   const p = plane.group.position;
 
-  if (view === 'root') {
+  if (view === 'seam') {
+    // Максимально близко к стыку киля и руля высоты.
+    camera.position.set(p.x - 0.75, p.y + 1.35, p.z - 3.75);
+    camera.lookAt(p.x - 0.30, p.y + 1.10, p.z - 2.85);
+  } else if (view === 'seam2') {
+    // Тот же стык с другой стороны.
+    camera.position.set(p.x + 0.35, p.y + 1.30, p.z - 3.75);
+    camera.lookAt(p.x - 0.10, p.y + 1.10, p.z - 2.85);
+  } else if (view === 'root') {
     // Корень оперения крупно: киль между половинами руля высоты.
     camera.position.set(p.x - 0.3, p.y + 1.5, p.z - 4.6);
     camera.lookAt(p.x - 0.3, p.y + 1.15, p.z - 2.85);
