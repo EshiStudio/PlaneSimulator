@@ -44,21 +44,24 @@ export function bindInput(domElement, actions) {
   // Уход фокуса (Alt+Tab с зажатой W) иначе оставлял клавишу «залипшей».
   addEventListener('blur', () => heldKeys.clear());
 
-  let dragging = false;
+  // Свободный обзор: камера следует за курсором без нажатия кнопок.
+  // lastX/lastY обновляются при входе курсора, чтобы не давать рывок.
   let lastX = 0;
   let lastY = 0;
+  let hasMouse = false;
 
-  domElement.addEventListener('pointerdown', event => {
-    if (event.button !== 0) return;
-    dragging = true;
+  domElement.addEventListener('pointerenter', event => {
     lastX = event.clientX;
     lastY = event.clientY;
-    domElement.classList.add('dragging');
-    domElement.setPointerCapture(event.pointerId);
   });
 
   domElement.addEventListener('pointermove', event => {
-    if (!dragging) return;
+    if (!hasMouse) {
+      hasMouse = true;
+      lastX = event.clientX;
+      lastY = event.clientY;
+      return;
+    }
     const dx = event.clientX - lastX;
     const dy = event.clientY - lastY;
     lastX = event.clientX;
@@ -66,17 +69,19 @@ export function bindInput(domElement, actions) {
     turnView(dx * VIEW_YAW_SENSITIVITY, dy * VIEW_PITCH_SENSITIVITY);
   });
 
-  const stopDrag = event => {
-    if (!dragging) return;
-    dragging = false;
-    domElement.classList.remove('dragging');
-    if (domElement.hasPointerCapture(event.pointerId)) {
-      domElement.releasePointerCapture(event.pointerId);
-    }
-  };
+  domElement.addEventListener('pointerleave', () => { hasMouse = false; });
 
-  domElement.addEventListener('pointerup', stopDrag);
-  domElement.addEventListener('pointercancel', stopDrag);
+  // ЛКМ — огонь (в кабине её обрабатывает main). Поворот камеры на неё не завязан.
+  domElement.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    actions.fireChange?.(true);
+  });
+
+  addEventListener('pointerup', event => {
+    if (event.button !== 0) return;
+    actions.fireChange?.(false);
+  });
+
   domElement.addEventListener('contextmenu', event => event.preventDefault());
 }
 

@@ -52,7 +52,9 @@ const GUN_RING_RE = /^polySurface(227|228|229|230)_/;
 const GUN_RING_OUTLINE_INFLATE = 0.004;
 // Запас вокруг стволов, в котором общая оболочка удаляется целиком.
 const GUN_CLEAR_RADIUS = 0.09;
-const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(120);
+// Турель стреляет в ЗАДНЮЮ полусферу: строго ±90° от направления хвоста.
+// Вперёд, через борт, ствол не проходит даже при максимальном отклонении.
+const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(90);
 const GUN_PITCH_MIN = THREE.MathUtils.degToRad(-25);
 const GUN_PITCH_MAX = THREE.MathUtils.degToRad(70);
 
@@ -464,6 +466,43 @@ export class Plane {
     this.gunPitch = new THREE.Object3D();
     this.gunYaw.add(this.gunPitch);
     parts.forEach(part => this.gunPitch.attach(part));
+
+    // Дула: меши делятся по знаку X на два ствола, дульный срез — минимум Z
+    // группы (хвост у модели по -Z). Позиции храним в локальных координатах
+    // gunPitch: вычитаем сдвиг gunYaw, чтобы вспышки держались за стволы.
+    const pivotPos = this.gunYaw.position;
+    const groups = [[], []];
+    for (const mesh of meshes) {
+      const meshCenter = new THREE.Vector3();
+      new THREE.Box3().setFromObject(mesh).getCenter(meshCenter);
+      model.worldToLocal(meshCenter);
+      groups[meshCenter.x < 0 ? 0 : 1].push(mesh);
+    }
+    this.muzzles = [];
+    this._muzzleQuat = new THREE.Quaternion();   // переиспользуемый temp
+    for (const group of groups) {
+      if (group.length === 0) continue;
+      const box = localBox(group, model);
+      const muzzle = new THREE.Object3D();
+      muzzle.position.set(
+        box.getCenter(new THREE.Vector3()).x - pivotPos.x,
+        box.max.y - pivotPos.y,
+        box.min.z - pivotPos.z
+      );
+      this.gunPitch.add(muzzle);
+      this.muzzles.push(muzzle);
+    }
+  }
+
+  /**
+   * Мировая точка дула выбранного ствола и направление стрельбы (локальный
+   * −Z турели). Возвращает false, если пулемёт в модели не найден.
+   */
+  getMuzzle(index, position, direction) {
+    if (this.muzzles.length === 0) return false;
+    this.muzzles[index % this.muzzles.length].getWorldPosition(position);
+    direction.set(0, 0, -1).applyQuaternion(this.gunPitch.getWorldQuaternion(this._muzzleQuat));
+    return true;
   }
 
   /**

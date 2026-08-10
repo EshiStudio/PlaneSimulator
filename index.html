@@ -17,13 +17,27 @@
     color: #fff; font-size: 20px; background: #333; z-index: 10;
   }
   #status[hidden] { display: none; }
-  canvas { display: block; cursor: grab; touch-action: none; }
-  canvas.dragging { cursor: grabbing; }
+  canvas { display: block; cursor: none; touch-action: none; }
+  #crosshair {
+    position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+    pointer-events: none; display: none;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: #fff;
+    box-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }
+  #crosshair::before { width: 2px; height: 16px; left: -1px; top: -8px; }
+  #crosshair::after { width: 16px; height: 2px; left: -8px; top: -1px; }
+  #crosshair span {
+    position: absolute; left: -2px; top: -2px; width: 4px; height: 4px;
+    border-radius: 50%; background: #fff; box-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }
 </style>
 </head>
 <body>
 <div id="status">Загрузка модели самолёта…</div>
 <div id="hud"></div>
+<div id="crosshair"><span></span></div>
 
 <script type="importmap">
 { "imports": { "three": "./lib/three.module.js" } }
