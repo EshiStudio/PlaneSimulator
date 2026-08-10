@@ -128,11 +128,10 @@ export class Hands {
     const rightRotation = (12 + step * 1.2) * Math.PI / 180 + this.lookSway.x * 0.0014;
     const handScale = base * 0.72;
 
-    // Зеркальность обратная исходнику: там кисти нарисованы ладонями к игроку и
-    // большие пальцы смотрят внутрь, а в кадре руки видны с тыльной стороны —
-    // из-за этого левая читалась как правая. Знаки side поменяны местами.
-    this.#drawHand(left, handScale, -1, leftRotation);
-    this.#drawHand(right, handScale, 1, rightRotation);
+    // Кисти поменяны местами обратно, как в исходном hands.gd: большие пальцы
+    // смотрят внутрь кадра.
+    this.#drawHand(left, handScale, 1, leftRotation);
+    this.#drawHand(right, handScale, -1, rightRotation);
   }
 
   // Зеркалим по стороне, поворачиваем и масштабируем — как _transform_point.
