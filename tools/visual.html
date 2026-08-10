@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><title>visual</title>
+<style>html,body{margin:0;overflow:hidden}canvas{display:block}</style></head>
+<body>
+<div id="status" hidden></div><div id="hud"></div>
+<script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { scene, camera, renderer, updateGround, updateSun } from '../src/scene.js';
+import { Plane } from '../src/plane.js';
+
+const OUT = new URLSearchParams(location.search).get('flaps') === 'out';
+const plane = new Plane();
+scene.add(plane.group);
+
+plane.load('../assets/stylized_ww1_plane.glb').then(() => {
+  plane.flapsOut = OUT;
+  for (let i = 0; i < 180; i++) plane.update(1 / 60);   // 3 с — панели дошли до упора
+  const p = plane.group.position;
+  const view = new URLSearchParams(location.search).get('view');
+  if (view === 'rear') {
+    // Из-за хвоста чуть выше крыла: отклонение панелей видно в профиль.
+    camera.position.set(p.x + 1.2, p.y + 2.9, p.z - 6.5);
+    camera.lookAt(p.x + 1.2, p.y + 2.1, p.z);
+  } else if (view === 'close') {
+    // Крупный план правого верхнего закрылка: видно стык панели с крылом.
+    camera.position.set(p.x + 3.6, p.y + 3.0, p.z - 2.6);
+    camera.lookAt(p.x + 2.7, p.y + 2.15, p.z - 0.45);
+  } else {
+    camera.position.set(p.x - 4.5, p.y + 3.4, p.z - 5.2); // сзади-слева, крупно
+    camera.lookAt(p.x, p.y + 1.4, p.z);
+  }
+  updateGround();
+  updateSun(p);
+  const draw = () => { requestAnimationFrame(draw); renderer.render(scene, camera); };
+  draw();
+  console.log(`VIS готово, flapsOut=${OUT}, верх=${THREE.MathUtils.radToDeg(plane.flapAngleUpper).toFixed(0)}° низ=${THREE.MathUtils.radToDeg(plane.flapAngleLower).toFixed(0)}°`);
+}).catch(e => console.log('VIS ОШИБКА ' + (e?.message ?? e)));
+</script>
+</body></html>
