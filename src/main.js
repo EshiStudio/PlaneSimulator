@@ -25,6 +25,8 @@ const SIGHT_DISTANCE = 40;    // м
 // Радиус персонажа для пешей коллизии с корпусом: форма самолёта берётся из
 // сетки занятости (см. plane.js #buildCollisionGrid), а не из прямоугольника.
 const PLAYER_RADIUS = 0.35;   // м
+// Высота ступеньки при автошаге — та же, что в plane.js COLLISION_STEP_UP.
+const CHARACTER_STEP_UP = 0.5;
 // Где персонаж стоит в начале — у левого крыла, лицом к самолёту.
 const START_OFFSET = { x: -4.6, z: 1.4 };
 
@@ -120,25 +122,56 @@ const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 // «Ноги» стоят на земле (y=0); при прыжке голова поднимается на velocity.y.
 const GROUND_Y = 0;
+// Подшаг пешей коллизии: движение разбивается на куски этого размера, чтобы
+// быстрый слайд (до ~15 м/с) не проскакивал сквозь ячейки сетки 0.2 м и не
+// «влетал» внутрь корпуса.
+const COLLISION_SUB_STEP = 0.1;
 
 function walk(dt, input) {
   player.update(dt, input, onFloor, view.yaw);
 
-  // Коллизия с самолётом: скольжение по осям порознь, чтобы не застревать
-  // на стыке клетки с бортом и всё же огибать крыло. Форма корпуса — из
-  // сетки занятости мешей, а не прямоугольник вокруг центра.
-  const blocked = (x, z) => plane.isBlocked(x, z, PLAYER_RADIUS);
+  // Коллизия с самолётом — сетка занятости мешей (см. plane.js
+  // #buildCollisionGrid): ячейки ниже ступеньки проходимы, на верхних
+  // гранях можно стоять, стены блокируют только на уровне тела.
+  const blocked = (x, z, y) => plane.isBlocked(x, z, PLAYER_RADIUS, y, CHARACTER_HEIGHT);
   const p = character.group.position;
-  const nx = p.x + player.velocity.x * dt;
-  const nz = p.z + player.velocity.z * dt;
-  if (!blocked(nx, p.z)) p.x = nx;
-  if (!blocked(p.x, nz)) p.z = nz;
+  const moveX = player.velocity.x * dt;
+  const moveZ = player.velocity.z * dt;
+  const dist = Math.hypot(moveX, moveZ);
+  const steps = Math.max(1, Math.ceil(dist / COLLISION_SUB_STEP));
+  for (let i = 0; i < steps; i++) {
+    const sx = moveX / steps;
+    const sz = moveZ / steps;
+    if (!blocked(p.x + sx, p.z, p.y)) p.x += sx;
+    if (!blocked(p.x, p.z + sz, p.y)) p.z += sz;
+  }
+  // Страховка от застревания: если всё же оказались внутри сетки (ниша,
+  // стены сомкнулись вокруг) — выталкиваем к ближайшей свободной точке.
+  if (blocked(p.x, p.z, p.y)) {
+    outer: for (let r = 1; r <= 10; r++) {
+      for (let a = 0; a < 8; a++) {
+        const ang = (a * Math.PI) / 4;
+        const tx = p.x + Math.cos(ang) * r * 0.12;
+        const tz = p.z + Math.sin(ang) * r * 0.12;
+        if (!blocked(tx, tz, p.y)) {
+          p.x = tx;
+          p.z = tz;
+          break outer;
+        }
+      }
+    }
+  }
+  // Вертикаль: прыжок/гравитация; приземление на верхние грани и
+  // автоматический шаг на низкие ступеньки (колёса, стойки) при движении.
   p.y += player.velocity.y * dt;
-  if (p.y <= GROUND_Y) {
-    p.y = GROUND_Y;
+  const floor = Math.max(GROUND_Y, plane.floorAt(p.x, p.z, PLAYER_RADIUS, p.y + CHARACTER_STEP_UP));
+  const canRise = player.velocity.y < 0 || player.horizontalSpeed > 0.2;
+  if (p.y <= floor && canRise) {
+    p.y = floor;
+    player.velocity.y = 0;
     onFloor = true;
   } else {
-    onFloor = false;
+    onFloor = p.y <= floor + 0.05;
   }
   character.group.rotation.y = view.yaw;   // корпус смотрит туда же, куда взгляд
 
@@ -221,6 +254,7 @@ function animate() {
 
   fire.update(dt);
   plane.update(dt);
+  character.stanceAmount = seated ? 0 : player.stanceAmount;
   character.update(dt, null);
   updateFirstPersonCamera(character.eyePosition(eye));
   updateGround();

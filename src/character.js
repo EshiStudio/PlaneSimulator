@@ -142,6 +142,8 @@ export class Character {
   constructor() {
     this.group = new THREE.Group();
     this.animationTime = 0;
+    // Степень «приседания» в слайде 0..1 — из PlayerPhysics.stanceAmount.
+    this.stanceAmount = 0;
 
     this.blinkAmount = 0;
     this.blinkTimer = 1.4;
@@ -357,15 +359,22 @@ export class Character {
   #animateBody() {
     const t = this.animationTime;
     const idle = Math.sin(t * 1.55);
+    // Слайд (Shift): фигура приседает — корпус вместе с глазами опускается,
+    // ноги выбрасываются вперёд, туловище откидывается назад, руки в стороны.
+    const stance = THREE.MathUtils.clamp(this.stanceAmount, 0, 1);
 
-    this.bodyRoot.position.y = Math.sin(t * 1.8) * 0.008;
+    this.bodyRoot.position.y = Math.sin(t * 1.8) * 0.008 - stance * 0.62;
     this.bodyRoot.rotation.z = idle * deg(0.5);
-    this.headRoot.rotation.x = Math.sin(t * 1.6) * deg(0.6);
+    this.bodyRoot.rotation.x = -stance * deg(10);
+    this.headRoot.rotation.x = Math.sin(t * 1.6) * deg(0.6) + stance * deg(4);
 
-    this.leftArm.rotation.z = deg(-10) + idle * deg(0.9);
-    this.rightArm.rotation.z = deg(10) - idle * deg(0.9);
-    this.leftLeg.rotation.z = deg(1);
-    this.rightLeg.rotation.z = deg(-1);
+    this.leftArm.rotation.z = deg(-10) + idle * deg(0.9) - stance * deg(8);
+    this.rightArm.rotation.z = deg(10) - idle * deg(0.9) + stance * deg(8);
+
+    this.leftLeg.rotation.x = stance * deg(58);
+    this.rightLeg.rotation.x = stance * deg(58);
+    this.leftLowerLeg.rotation.x = -stance * deg(30);
+    this.rightLowerLeg.rotation.x = -stance * deg(30);
   }
 
   #animateSprout() {

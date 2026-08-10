@@ -12,6 +12,9 @@ const STANCE_PITCH = THREE.MathUtils.degToRad(-8);  // парковочный т
 // а не прямоугольник. Ячейка и запас вокруг корпуса — в метрах.
 const COLLISION_CELL = 0.2;
 const COLLISION_MARGIN = 0.5;
+// Максимальная высота ступеньки (м): ячейки с верхней гранью ниже этой
+// отметки не считаются стеной — на них можно запрыгнуть/зашагнуть.
+const COLLISION_STEP_UP = 0.5;
 
 const PROP_MAX_SPEED = 40;            // рад/с (~6.4 об/с)
 const PROP_ACCEL = 18;                // рад/с^2 — плавная раскрутка и торможение
@@ -552,7 +555,7 @@ export class Plane {
       const ta = v.copy(a).applyMatrix4(mesh.matrixWorld).applyMatrix4(toLocal);
       const tb = v.copy(b).applyMatrix4(mesh.matrixWorld).applyMatrix4(toLocal);
       const tc = v.copy(c).applyMatrix4(mesh.matrixWorld).applyMatrix4(toLocal);
-      triangles.push(ta.x, ta.z, tb.x, tb.z, tc.x, tc.z);
+      triangles.push(ta.x, ta.y, ta.z, tb.x, tb.y, tb.z, tc.x, tc.y, tc.z);
       for (const p of [ta, tb, tc]) {
         if (p.x < min.x) min.x = p.x;
         if (p.x > max.x) max.x = p.x;
@@ -588,6 +591,10 @@ export class Plane {
     const cols = Math.max(1, Math.ceil((max.x - min.x + margin * 2) / cell));
     const rows = Math.max(1, Math.ceil((max.z - min.z + margin * 2) / cell));
     const grid = new Uint8Array(cols * rows);
+    // Для высотной коллизии: верхняя и нижняя грани твёрдого тела в каждой
+    // ячейке (локальные Y) — по ним решаем, стена это, ступенька или навес.
+    const top = new Float32Array(cols * rows).fill(-Infinity);
+    const bottom = new Float32Array(cols * rows).fill(Infinity);
 
     const inTri = (px, pz, ax, az, bx, bz, cx, cz) => {
       const d1 = (px - bx) * (az - bz) - (ax - bx) * (pz - bz);
@@ -598,12 +605,13 @@ export class Plane {
       return !(neg && pos);
     };
 
-    for (let t = 0; t < triangles.length; t += 6) {
-      const ax = triangles[t], az = triangles[t + 1];
-      const bx = triangles[t + 2], bz = triangles[t + 3];
-      const cx = triangles[t + 4], cz = triangles[t + 5];
+    for (let t = 0; t < triangles.length; t += 9) {
+      const ax = triangles[t], ay = triangles[t + 1], az = triangles[t + 2];
+      const bx = triangles[t + 3], by = triangles[t + 4], bz = triangles[t + 5];
+      const cx = triangles[t + 6], cy = triangles[t + 7], cz = triangles[t + 8];
       const tminX = Math.min(ax, bx, cx), tmaxX = Math.max(ax, bx, cx);
       const tminZ = Math.min(az, bz, cz), tmaxZ = Math.max(az, bz, cz);
+      const tminY = Math.min(ay, by, cy), tmaxY = Math.max(ay, by, cy);
       const j0 = Math.max(0, Math.floor((tminZ - minZ) / cell));
       const j1 = Math.min(rows - 1, Math.floor((tmaxZ - minZ) / cell));
       const i0 = Math.max(0, Math.floor((tminX - minX) / cell));
@@ -612,32 +620,45 @@ export class Plane {
         const pz = minZ + (j + 0.5) * cell;
         for (let i = i0; i <= i1; i++) {
           const px = minX + (i + 0.5) * cell;
-          if (grid[j * cols + i]) continue;
-          if (inTri(px, pz, ax, az, bx, bz, cx, cz)) grid[j * cols + i] = 1;
+          if (inTri(px, pz, ax, az, bx, bz, cx, cz)) {
+            const k = j * cols + i;
+            grid[k] = 1;
+            if (tmaxY > top[k]) top[k] = tmaxY;
+            if (tminY < bottom[k]) bottom[k] = tminY;
+          }
         }
       }
     }
 
-    this._collision = { minX, minZ, cell, cols, rows, grid };
+    this._collision = { minX, minZ, cell, cols, rows, grid, top, bottom };
   }
 
   /**
-   * Проверка пешей коллизии: занята ли хотя бы одна ячейка сетки в радиусе
-   * вокруг мировой точки. Пока сетки нет (модель не загружена) — свободно.
+   * Проверка пешей коллизии: занята ли ячейка сетки в радиусе вокруг мировой
+   * точки на уровне тела игрока. feetY — высота ног, height — рост персонажа.
+   * Ячейка — стена, только если её твёрдое тело пересекает уровень тела:
+   * нижняя грань ниже головы, верхняя выше ступеньки COLLISION_STEP_UP.
+   * Низкие ячейки (ступеньки) проходимы, высокие навесы (крыло) — тоже,
+   * если проходят над головой. Пока сетки нет — свободно.
    */
-  isBlocked(x, z, radius) {
+  isBlocked(x, z, radius, feetY = 0, height = 2) {
     const c = this._collision;
     if (c) {
       const v = this._collisionTmp ?? (this._collisionTmp = new THREE.Vector3());
       v.set(x, 0, z);
       this.group.worldToLocal(v);
+      const gy = this.group.position.y;
+      const headY = feetY + height;
+      const stepY = feetY + COLLISION_STEP_UP;
       const j0 = Math.max(0, Math.floor((v.z - radius - c.minZ) / c.cell));
       const j1 = Math.min(c.rows - 1, Math.floor((v.z + radius - c.minZ) / c.cell));
       const i0 = Math.max(0, Math.floor((v.x - radius - c.minX) / c.cell));
       const i1 = Math.min(c.cols - 1, Math.floor((v.x + radius - c.minX) / c.cell));
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
-          if (c.grid[j * c.cols + i]) return true;
+          const k = j * c.cols + i;
+          if (!c.grid[k]) continue;
+          if (c.top[k] + gy > stepY && c.bottom[k] + gy < headY) return true;
         }
       }
     }
@@ -651,6 +672,34 @@ export class Plane {
       if (dx * dx + dz * dz <= this.propZone.r * this.propZone.r) return true;
     }
     return false;
+  }
+
+  /**
+   * Самая высокая верхняя грань ячеек в радиусе вокруг точки, не выше
+   * maxBelow (мир.). Для приземления и автошага: пол под ногами игрока.
+   * -Infinity, если в радиусе нет ячеек ниже этой отметки.
+   */
+  floorAt(x, z, radius, maxBelow) {
+    const c = this._collision;
+    if (!c) return -Infinity;
+    const v = this._floorTmp ?? (this._floorTmp = new THREE.Vector3());
+    v.set(x, 0, z);
+    this.group.worldToLocal(v);
+    const gy = this.group.position.y;
+    const j0 = Math.max(0, Math.floor((v.z - radius - c.minZ) / c.cell));
+    const j1 = Math.min(c.rows - 1, Math.floor((v.z + radius - c.minZ) / c.cell));
+    const i0 = Math.max(0, Math.floor((v.x - radius - c.minX) / c.cell));
+    const i1 = Math.min(c.cols - 1, Math.floor((v.x + radius - c.minX) / c.cell));
+    let floor = -Infinity;
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const k = j * c.cols + i;
+        if (!c.grid[k]) continue;
+        const topY = c.top[k] + gy;
+        if (topY <= maxBelow && topY > floor) floor = topY;
+      }
+    }
+    return floor;
   }
 
   /**
@@ -853,6 +902,8 @@ export class Plane {
   }
 
   update(dt) {
+    // До загрузки модели стволов ещё нет — main.js крутит update() каждый кадр.
+    if (!this.barrels) return;
     // Возврат стволов после отдачи: плавно к домашней позиции за 0.3 с.
     for (let i = 0; i < this.barrels.length; i++) {
       if (this.muzzleKick[i] <= 0) continue;
