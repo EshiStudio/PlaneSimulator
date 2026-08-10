@@ -137,6 +137,12 @@ const vec = (x, y, z) => new THREE.Vector3(x, y, z);
 export const NATURAL_HEIGHT = 2.35;
 // Центр глаз в системе координат головы (лицо смотрит по -Z).
 const EYE_LOCAL = new THREE.Vector3(0, -0.035, -0.30);
+// Слайд-поза один в один из оригинального test_character.gd: тело сжимается
+// до высоты капсулы слайда (SLIDE_HEIGHT 1.18 из STANDING_HEIGHT 2.35) и
+// слегка расширяется. Камера стоит на голове, поэтому при сплющивании глаз
+// опускается так же, как VIEW_HEIGHT 2.12 → SLIDE_VIEW_HEIGHT 1.02.
+const CROUCH_HEIGHT_SCALE = 1.18 / 2.35;
+const CROUCH_WIDTH_SCALE = 1.08;
 
 export class Character {
   constructor() {
@@ -359,22 +365,31 @@ export class Character {
   #animateBody() {
     const t = this.animationTime;
     const idle = Math.sin(t * 1.55);
-    // Слайд (Shift): фигура приседает — корпус вместе с глазами опускается,
-    // ноги выбрасываются вперёд, туловище откидывается назад, руки в стороны.
-    const stance = THREE.MathUtils.clamp(this.stanceAmount, 0, 1);
+    // Слайд (Shift): crouch-термины один в один из оригинального
+    // test_character.gd — корпус сплющивается по высоте и чуть расширяется,
+    // голова наклоняется вниз, руки уходят вперёд, ноги назад, стопы кверху.
+    const crouch = THREE.MathUtils.clamp(this.stanceAmount, 0, 1);
 
-    this.bodyRoot.position.y = Math.sin(t * 1.8) * 0.008 - stance * 0.62;
+    this.bodyRoot.position.y = Math.sin(t * 1.8) * 0.008 - crouch * 0.015;
+    this.bodyRoot.scale.set(
+      1 + crouch * (CROUCH_WIDTH_SCALE - 1),
+      1 - crouch * (1 - CROUCH_HEIGHT_SCALE),
+      1 + crouch * (CROUCH_WIDTH_SCALE - 1),
+    );
     this.bodyRoot.rotation.z = idle * deg(0.5);
-    this.bodyRoot.rotation.x = -stance * deg(10);
-    this.headRoot.rotation.x = Math.sin(t * 1.6) * deg(0.6) + stance * deg(4);
+    this.headRoot.rotation.x = Math.sin(t * 1.6) * deg(0.6) - crouch * deg(4);
 
-    this.leftArm.rotation.z = deg(-10) + idle * deg(0.9) - stance * deg(8);
-    this.rightArm.rotation.z = deg(10) - idle * deg(0.9) + stance * deg(8);
+    this.leftArm.rotation.z = deg(-10) + idle * deg(0.9);
+    this.rightArm.rotation.z = deg(10) - idle * deg(0.9);
+    this.leftArm.rotation.x = crouch * deg(8);
+    this.rightArm.rotation.x = crouch * deg(8);
 
-    this.leftLeg.rotation.x = stance * deg(58);
-    this.rightLeg.rotation.x = stance * deg(58);
-    this.leftLowerLeg.rotation.x = -stance * deg(30);
-    this.rightLowerLeg.rotation.x = -stance * deg(30);
+    this.leftLeg.rotation.z = deg(1);
+    this.rightLeg.rotation.z = deg(-1);
+    this.leftLeg.rotation.x = -crouch * deg(14);
+    this.rightLeg.rotation.x = -crouch * deg(14);
+    this.leftFoot.rotation.x = crouch * deg(7);
+    this.rightFoot.rotation.x = crouch * deg(7);
   }
 
   #animateSprout() {

@@ -54,6 +54,8 @@ export class Hands {
     this.lookSway = { x: 0, y: 0 };
     this.lastYaw = view.yaw;
     this.lastPitch = view.pitch;
+    this.slideAmount = 0;
+    this.slidePhase = 0;
 
     this.#resize();
     addEventListener('resize', () => this.#resize());
@@ -72,8 +74,8 @@ export class Hands {
     this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
-  /** @param input {x,y} направление хода, speed — скорость в м/с. */
-  update(dt, input, speed) {
+  /** @param input {x,y} направление хода, speed — скорость м/с, stance — стойка слайда 0..1. */
+  update(dt, input, speed, stance = 0) {
     this.time += dt;
 
     const smooth = 1 - Math.exp(-16 * dt);
@@ -83,6 +85,12 @@ export class Hands {
 
     const speedFactor = Math.min(Math.max(this.smoothedSpeed / 10, 0), 1.25);
     this.stridePhase += dt * (3.6 + speedFactor * 6.8);
+
+    // Слайд: как в оригинальном hands.gd — руки плавно входят в стойку.
+    this.slideAmount += (Math.min(Math.max(stance, 0), 1) - this.slideAmount) * (1 - Math.exp(-13 * dt));
+    if (this.slideAmount > 0.05) {
+      this.slidePhase += dt * (2.2 + speedFactor * 1.4);
+    }
 
     // Качание от поворота взгляда: руки отстают от резкого движения мышью.
     let yawDelta = view.yaw - this.lastYaw;
@@ -109,29 +117,61 @@ export class Hands {
     const breathe = Math.sin(this.time * 1.25);
     const input = this.smoothedInput;
 
+    // Слайд-термины один в один из _draw() оригинального hands.gd.
+    const slideEase = this.slideAmount * this.slideAmount * (3 - 2 * this.slideAmount);
+    const slideWave = Math.sin(this.slidePhase) * slideEase * 0.45;
+    const slideDrop = slideEase * 18 * base;
+    const slideSide = Math.min(Math.max(input.x, -1), 1);
+    const slideForward = Math.min(Math.max(input.y, -1), 1);
+    const bobStrength = 1 - slideEase * 0.82;
+
     const swayX = input.x * 14 * base;
     const swayY = -input.y * 8 * base;
-    const bobLeftY = (Math.abs(step) * 8 + breathe * 3) * speedFactor * base;
-    const bobRightY = (-Math.abs(step) * 6 - breathe * 3) * speedFactor * base;
-    const bobX = step * 4 * speedFactor * base;
+    const bobLeftY = (Math.abs(step) * 8 + breathe * 3) * speedFactor * base * bobStrength;
+    const bobRightY = (-Math.abs(step) * 6 - breathe * 3) * speedFactor * base * bobStrength;
+    const bobX = step * 4 * speedFactor * base * bobStrength;
 
+    const slideX = slideSide * 18 + slideWave * 6;
+    const slideY = -slideForward * 16 - slideEase * 8;
     const left = {
-      x: width * 0.17 - swayX + bobX + this.lookSway.x * base * 0.55 - 46 * base,
-      y: height - 92 * base + swayY + bobLeftY + this.lookSway.y * base * 0.55,
+      x: width * 0.17 - swayX + bobX + this.lookSway.x * base * 0.55 + (-46 + slideX) * base,
+      y: height - 92 * base + swayY + bobLeftY + this.lookSway.y * base * 0.55 + slideDrop + slideY * base,
     };
     const right = {
-      x: width * 0.83 - swayX + bobX + this.lookSway.x * base * 0.55 + 46 * base,
-      y: height - 92 * base + swayY + bobRightY + this.lookSway.y * base * 0.55,
+      x: width * 0.83 - swayX + bobX + this.lookSway.x * base * 0.55 + (46 + slideSide * 10 + slideWave * 6) * base,
+      y: height - 92 * base + swayY + bobRightY + this.lookSway.y * base * 0.55 + slideDrop + slideY * base,
     };
 
-    const leftRotation = (-12 + step * 1.2) * Math.PI / 180 + this.lookSway.x * 0.0014;
-    const rightRotation = (12 + step * 1.2) * Math.PI / 180 + this.lookSway.x * 0.0014;
-    const handScale = base * 0.72;
+    const leftRotation = (-12 + step * 1.2 * bobStrength - slideEase * 15 - slideSide * 10 + slideForward * 4) * Math.PI / 180 + this.lookSway.x * 0.0014;
+    const rightRotation = (12 + step * 1.2 * bobStrength + slideEase * 15 + slideSide * 10 + slideForward * 4) * Math.PI / 180 + this.lookSway.x * 0.0014;
+    const handScale = base * (0.72 + (0.65 - 0.72) * slideEase);
+
+    if (slideEase > 0.05) {
+      this.#braceMarks(left, right, base, slideEase * 0.45);
+    }
 
     // Кисти поменяны местами обратно, как в исходном hands.gd: большие пальцы
     // смотрят внутрь кадра.
     this.#drawHand(left, handScale, 1, leftRotation);
     this.#drawHand(right, handScale, -1, rightRotation);
+  }
+
+  // Тормозные штрихи на земле во время слайда — как _draw_slide_brace_marks.
+  #braceMarks(left, right, base, amount) {
+    const ctx = this.ctx;
+    const alpha = 0.05 + amount * 0.16;
+    ctx.strokeStyle = `rgba(4,5,7,${alpha})`;
+    ctx.lineWidth = 2 * base;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 2; i++) {
+      const yOffset = (92 + i * 9) * base;
+      ctx.beginPath();
+      ctx.moveTo(left.x + (-40 - i * 14) * base, left.y + yOffset);
+      ctx.lineTo(left.x + (10 + i * 6) * base, left.y + yOffset + 8 * base);
+      ctx.moveTo(right.x + (40 + i * 14) * base, right.y + yOffset);
+      ctx.lineTo(right.x + (-10 - i * 6) * base, right.y + yOffset + 8 * base);
+      ctx.stroke();
+    }
   }
 
   // Зеркалим по стороне, поворачиваем и масштабируем — как _transform_point.

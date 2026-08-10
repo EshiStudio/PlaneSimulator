@@ -249,7 +249,7 @@ function animate() {
     const input = { ...walkInput(), jump: jumpHeld(), slide: slideHeld() };
     walk(dt, input);
     const moving = player.horizontalSpeed > 0.05;
-    hands.update(dt, { x: input.strafe, y: input.forward }, moving ? player.filteredSpeed : 0);
+    hands.update(dt, { x: input.strafe, y: input.forward }, moving ? player.filteredSpeed : 0, player.stanceAmount);
   }
 
   fire.update(dt);
