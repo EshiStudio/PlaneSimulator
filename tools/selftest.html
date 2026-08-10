@@ -21,7 +21,7 @@ plane.load('../assets/stylized_ww1_plane.glb').then(() => {
     const kids = s.pivot.children.map(c => c.name.split('_')[0]).join('+');
     log(`  ${s.side}${s.level} меши=${kids}`);
   });
-  log(`половин руля высоты: ${plane.elevators.length} (ожидается 2)`);
+  log(`шарниров руля высоты: ${plane.elevators.length} (ожидается 1: обе половины + контур)`);
   plane.elevators.forEach(p => log(`  меши=${p.children.map(c => c.name.split('_')[0]).join('+')}`));
   log(`винт: ${plane.propPivot ? plane.propPivot.children.length + ' мешей' : 'НЕ НАЙДЕН'}`);
 

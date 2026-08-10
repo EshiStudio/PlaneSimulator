@@ -31,7 +31,11 @@ plane.load('../assets/stylized_ww1_plane.glb').then(() => {
   }
   const p = plane.group.position;
 
-  if (view === 'tail') {
+  if (view === 'root') {
+    // Корень оперения крупно: киль между половинами руля высоты.
+    camera.position.set(p.x - 0.3, p.y + 1.5, p.z - 4.6);
+    camera.lookAt(p.x - 0.3, p.y + 1.15, p.z - 2.85);
+  } else if (view === 'tail') {
     camera.position.set(p.x + 2.6, p.y + 2.2, p.z - 6.4);
     camera.lookAt(p.x, p.y + 1.1, p.z - 3.0);
   } else if (view === 'rear') {

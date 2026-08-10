@@ -34,10 +34,6 @@ const AILERON_MESH_RE = /^polySurface(161|165|173|174|407|408|410|411)_/;
 // контур хвоста входит в общую оболочку polySurface308_Tooner_0.
 const ELEVATOR_MESH_RE = /^polySurface(200|292)_/;
 const HULL_OUTLINE_NAME = 'polySurface308_Tooner_0';
-// Запас вокруг панели, в котором контурная оболочка считается «хвостовой».
-// Доля размера панели плюс небольшой абсолютный зазор.
-const OUTLINE_MARGIN_RATIO = 0.12;
-const OUTLINE_MARGIN_MIN = 0.004;
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 
 /** Габариты мешей в собственных координатах модели. */
@@ -74,57 +70,73 @@ function subGeometry(geometry, triangles) {
 }
 
 /**
- * Вырезает из общей контурной оболочки куски, попавшие в заданные области, и
- * возвращает по мешу на область. Нужно для хвоста: его контур входит в общую
- * оболочку фюзеляжа, и без разреза он остаётся висеть на месте, когда руль
- * высоты отклоняется. Треугольник уходит в область, только если В НЕЙ ЛЕЖАТ
- * ВСЕ ТРИ его вершины — иначе в хвост утягивает контур фюзеляжа.
+ * Вырезает из общей контурной оболочки её кусок, относящийся к заданным мешам.
+ * Нужно для хвоста: его контур входит в общую оболочку фюзеляжа, и без разреза
+ * он остаётся висеть чёрным пятном на месте отклонённого руля высоты.
+ *
+ * Треугольник отходит тому мешу, к которому он БЛИЖЕ ВСЕГО. По габаритам
+ * панели это делать нельзя: оболочка раздута наружу почти на полметра и в них
+ * просто не попадает, а достаточный запас захватывает киль и хвостовую балку.
  */
-function extractOutlineParts(shell, model, regions) {
+function extractOutlineFor(shell, model, targets, candidates) {
   const geometry = shell.geometry;
   const index = geometry.index;
   const position = geometry.attributes.position;
   const toModel = meshToModelMatrix(shell, model);
   const triangleCount = (index ? index.count : position.count) / 3;
 
-  const parts = regions.map(() => []);
+  const owners = candidates.map(mesh => ({
+    box: localBox([mesh], model),
+    wanted: targets.includes(mesh),
+  }));
+  owners.forEach(owner => { owner.center = owner.box.getCenter(new THREE.Vector3()); });
+
+  const taken = [];
   const kept = [];
-  const v = new THREE.Vector3();
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const centroid = new THREE.Vector3();
 
   for (let t = 0; t < triangleCount; t++) {
-    let owner = -1;
-    for (let r = 0; r < regions.length && owner < 0; r++) {
-      let inside = true;
-      for (let corner = 0; corner < 3 && inside; corner++) {
-        const i = index ? index.getX(t * 3 + corner) : t * 3 + corner;
-        v.fromBufferAttribute(position, i).applyMatrix4(toModel);
-        inside = regions[r].containsPoint(v);
+    const i0 = index ? index.getX(t * 3) : t * 3;
+    const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+    const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+    a.fromBufferAttribute(position, i0).applyMatrix4(toModel);
+    b.fromBufferAttribute(position, i1).applyMatrix4(toModel);
+    c.fromBufferAttribute(position, i2).applyMatrix4(toModel);
+    centroid.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+
+    let best = null;
+    let bestScore = Infinity;
+    for (const owner of owners) {
+      // Расстояние до габаритов, а при равенстве (точка внутри нескольких) —
+      // до их центра: так треугольник достаётся более подходящему мешу.
+      const score = owner.box.distanceToPoint(centroid) * 1000 + centroid.distanceTo(owner.center);
+      if (score < bestScore) {
+        bestScore = score;
+        best = owner;
       }
-      if (inside) owner = r;
     }
-    if (owner < 0) kept.push(t);
-    else parts[owner].push(t);
+    if (best !== null && best.wanted) taken.push(t);
+    else kept.push(t);
   }
 
-  const meshes = parts.map(triangles => {
-    if (triangles.length === 0) return null;
-    const part = new THREE.Mesh(subGeometry(geometry, triangles), shell.material);
-    part.name = `${shell.name}_part`;
-    part.position.copy(shell.position);
-    part.quaternion.copy(shell.quaternion);
-    part.scale.copy(shell.scale);
-    part.castShadow = false;      // контур тени не отбрасывает
-    part.receiveShadow = false;
-    shell.parent.add(part);
-    return part;
-  });
+  if (taken.length === 0) return null;
 
-  if (meshes.some(part => part !== null)) {
-    const remaining = subGeometry(geometry, kept);
-    geometry.dispose();
-    shell.geometry = remaining;
-  }
-  return meshes;
+  const part = new THREE.Mesh(subGeometry(geometry, taken), shell.material);
+  part.name = `${shell.name}_part`;
+  part.position.copy(shell.position);
+  part.quaternion.copy(shell.quaternion);
+  part.scale.copy(shell.scale);
+  part.castShadow = false;      // контур тени не отбрасывает
+  part.receiveShadow = false;
+  shell.parent.add(part);
+
+  const remaining = subGeometry(geometry, kept);
+  geometry.dispose();
+  shell.geometry = remaining;
+  return part;
 }
 
 /** Плавное движение значения к цели с ограничением шага. */
@@ -296,7 +308,8 @@ export class Plane {
 
     this.group.add(stance);
     this.group.updateMatrixWorld(true);
-    this.model = model;   // собственная система координат модели, нужна для диагностики
+    this.model = model;              // собственная система координат модели
+    this.solidMeshes = solidMeshes;  // без контурных оболочек
 
     this.#buildPropeller(model);
     this.#buildAilerons(model);
@@ -402,32 +415,29 @@ export class Plane {
       else if (node.name === HULL_OUTLINE_NAME) hull = node;
     });
 
-    // Контур хвоста живёт в общей оболочке фюзеляжа — вырезаем его куски,
-    // иначе при отклонении руля на его месте остаётся чёрное пятно.
-    let outlineParts = halves.map(() => null);
-    if (hull !== null && halves.length > 0) {
-      const regions = halves.map(mesh => {
-        const box = localBox([mesh], model);
-        const size = box.getSize(new THREE.Vector3());
-        return box.expandByVector(new THREE.Vector3(
-          Math.max(size.x * OUTLINE_MARGIN_RATIO, OUTLINE_MARGIN_MIN),
-          Math.max(size.y * OUTLINE_MARGIN_RATIO, OUTLINE_MARGIN_MIN),
-          Math.max(size.z * OUTLINE_MARGIN_RATIO, OUTLINE_MARGIN_MIN)
-        ));
-      });
-      outlineParts = extractOutlineParts(hull, model, regions);
+    if (halves.length === 0) {
+      console.warn('PlaneSimulator: руль высоты не найден — тангаж будет без анимации');
+      return;
+    }
+
+    // Обе половины ходят синхронно, поэтому сидят на ОДНОМ шарнире. Так контур
+    // хвоста вырезается одним куском: он состоит из крупных треугольников, и
+    // при делении на две области они перестают целиком попадать в область и
+    // остаются висеть чёрным пятном на месте отклонённого руля.
+    const surfaces = [...halves];
+
+    if (hull !== null) {
+      // Соседи-конкуренты за треугольники контура: киль и хвостовая балка
+      // должны забрать свои куски, иначе они уедут вместе с рулём.
+      const outline = extractOutlineFor(hull, model, halves, this.solidMeshes);
+      if (outline !== null) surfaces.push(outline);
+      else console.warn('PlaneSimulator: контур хвоста не выделен — останется на месте');
     } else {
       console.warn('PlaneSimulator: общая контурная оболочка не найдена — контур хвоста останется на месте');
     }
 
-    halves.forEach((mesh, i) => {
-      const group = outlineParts[i] === null ? [mesh] : [mesh, outlineParts[i]];
-      const pivot = this.#mountSurface(model, group, `руль высоты ${mesh.name}`);
-      if (pivot !== null) this.elevators.push(pivot);
-    });
-    if (this.elevators.length === 0) {
-      console.warn('PlaneSimulator: руль высоты не найден — тангаж будет без анимации');
-    }
+    const pivot = this.#mountSurface(model, surfaces, 'руль высоты');
+    if (pivot !== null) this.elevators.push(pivot);
   }
 
   update(dt) {
