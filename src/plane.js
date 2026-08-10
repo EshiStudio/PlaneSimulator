@@ -42,6 +42,10 @@ const ELEVATOR_MESH_RE = /^polySurface(200|292)_/;
 // контур висел в воздухе чёрными силуэтами. Кольцо кабины (227, 228) и его
 // детали (229, 230) неподвижны и в турель не входят.
 const GUN_MESH_RE = /^polySurface(195|199|231|232|233|234|235|236|237|238|239|240|241|242)_/;
+// Толщина собственного контура пулемёта в единицах модели (×5.7 = метры).
+// Стволы тонкие, около 0.02 в поперечнике, поэтому запас минимальный: при
+// 0.006 контур просто съедал их целиком.
+const GUN_OUTLINE_INFLATE = 0.005;
 const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(120);
 const GUN_PITCH_MIN = THREE.MathUtils.degToRad(-25);
 const GUN_PITCH_MAX = THREE.MathUtils.degToRad(70);
@@ -187,6 +191,45 @@ function deleteOutlineInside(shell, model, box) {
   geometry.dispose();
   shell.geometry = remaining;
   return triangleCount - kept.length;
+}
+
+/**
+ * Строит контур для набора мешей: копия геометрии, раздутая вдоль нормалей, с
+ * тем же чёрным материалом, что и общая оболочка (он рисуется по задним
+ * граням). Нужен там, где кусок общей оболочки не годится: она раздута на
+ * полметра и делится между соседними деталями «по ближайшему», поэтому часть
+ * контура мелкой детали неизбежно достаётся соседям и остаётся на месте.
+ */
+function buildOutlineMeshes(meshes, color, inflate) {
+  // Материал общей оболочки не годится: там контур получается из вывернутых
+  // нормалей самой модели, а копия с обычными нормалями им просто
+  // закрашивается. Поэтому рисуем ЗАДНИЕ грани и без освещения.
+  const material = new THREE.MeshBasicMaterial({ color, side: THREE.BackSide });
+  return meshes.map(mesh => {
+    const geometry = mesh.geometry.clone();
+    const position = geometry.attributes.position;
+    const normal = geometry.attributes.normal;
+    if (normal) {
+      for (let i = 0; i < position.count; i++) {
+        position.setXYZ(
+          i,
+          position.getX(i) + normal.getX(i) * inflate,
+          position.getY(i) + normal.getY(i) * inflate,
+          position.getZ(i) + normal.getZ(i) * inflate
+        );
+      }
+      position.needsUpdate = true;
+    }
+    const outline = new THREE.Mesh(geometry, material);
+    outline.name = `${mesh.name}_outline`;
+    outline.position.copy(mesh.position);
+    outline.quaternion.copy(mesh.quaternion);
+    outline.scale.copy(mesh.scale);
+    outline.castShadow = false;
+    outline.receiveShadow = false;
+    mesh.parent.add(outline);
+    return outline;
+  });
 }
 
 /** Плавное движение значения к цели с ограничением шага. */
@@ -384,15 +427,19 @@ export class Plane {
       return;
     }
 
-    // Контур пулемёта живёт в общей оболочке фюзеляжа: вырезаем его кусок и
-    // вешаем на турель, чтобы он ездил вместе со стволами. Оставить на месте
-    // нельзя — повиснет в воздухе чёрным силуэтом, как только стволы отведут.
+    // Кусок общей оболочки над пулемётом вырезаем и выбрасываем, а контур
+    // строим заново по геометрии самих стволов: только так он совпадает с
+    // ними полностью и целиком уезжает вместе с турелью.
     const parts = [...meshes];
     const hull = model.getObjectByName(HULL_OUTLINE_NAME);
     if (hull) {
-      const outline = extractOutlineFor(hull, model, meshes, this.solidMeshes);
-      if (outline !== null) parts.push(outline);
-      else console.warn('PlaneSimulator: контур пулемёта не выделен — останется на месте');
+      const stale = extractOutlineFor(hull, model, meshes, this.solidMeshes);
+      if (stale !== null) {
+        stale.removeFromParent();
+        stale.geometry.dispose();
+      }
+      const color = hull.material?.color ?? new THREE.Color(0x000000);
+      parts.push(...buildOutlineMeshes(meshes, color, GUN_OUTLINE_INFLATE));
     }
 
     const center = unionBox(meshes).getCenter(new THREE.Vector3());
