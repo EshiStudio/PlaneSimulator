@@ -52,6 +52,11 @@ const GUN_RING_RE = /^polySurface(227|228|229|230)_/;
 const GUN_RING_OUTLINE_INFLATE = 0.004;
 // Запас вокруг стволов, в котором общая оболочка удаляется целиком.
 const GUN_CLEAR_RADIUS = 0.09;
+// Отдача ствола: откат в метрах (в локальных единицах модели он переводится
+// через фактический масштаб — см. kickMuzzle) и время плавного возврата.
+// Выстрел сдвигает ствол мгновенно, затем он возвращается за 0.3 с.
+const MUZZLE_RECOIL_M = 0.05;
+const MUZZLE_RECOVER_TIME = 0.3;
 // Турель стреляет в ЗАДНЮЮ полусферу: строго ±90° от направления хвоста.
 // Вперёд, через борт, ствол не проходит даже при максимальном отклонении.
 const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(90);
@@ -399,6 +404,7 @@ export class Plane {
     const raw = unionBox(solidMeshes);
     const span = Math.max(raw.max.x - raw.min.x, raw.max.z - raw.min.z);
     model.scale.setScalar(span > 0.001 ? TARGET_SPAN / span : 1);
+    this._modelScale = model.scale.x;   // откат ствола переводится из метров в локальные единицы
 
     // Крен и тангаж живут в отдельном узле-стойке, а собственные оси модели
     // остаются невращёнными: на них строятся ось винта и оси шарниров.
@@ -467,31 +473,71 @@ export class Plane {
     this.gunYaw.add(this.gunPitch);
     parts.forEach(part => this.gunPitch.attach(part));
 
-    // Дула: меши делятся по знаку X на два ствола, дульный срез — минимум Z
-    // группы (хвост у модели по -Z). Позиции храним в локальных координатах
-    // gunPitch: вычитаем сдвиг gunYaw, чтобы вспышки держались за стволы.
+    // Дула: меши делятся по знаку Z на два ствола (в модели спарка разнесена
+    // вдоль Z, а не по X), дульный срез — минимум Z группы (хвост по -Z).
+    // Позиции храним в локальных координатах gunPitch: вычитаем сдвиг gunYaw,
+    // чтобы вспышки держались за стволы.
     const pivotPos = this.gunYaw.position;
     const groups = [[], []];
-    for (const mesh of meshes) {
-      const meshCenter = new THREE.Vector3();
-      new THREE.Box3().setFromObject(mesh).getCenter(meshCenter);
-      model.worldToLocal(meshCenter);
-      groups[meshCenter.x < 0 ? 0 : 1].push(mesh);
+    for (const part of parts) {
+      const partCenter = new THREE.Vector3();
+      new THREE.Box3().setFromObject(part).getCenter(partCenter);
+      model.worldToLocal(partCenter);
+      groups[partCenter.z < 0 ? 0 : 1].push(part);
     }
+    // Дуло — не центр бокса и не его верх (туда входят стойки и мушки),
+    // а средняя точка слоя вершин у самого среза: X и Y оси ствола.
+    const muzzlePoint = (group, box) => {
+      const minZ = box.min.z;
+      let sx = 0, sy = 0, n = 0;
+      const v = new THREE.Vector3();
+      for (const part of group) {
+        const pos = part.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i);
+          part.localToWorld(v);
+          model.worldToLocal(v);
+          if (v.z < minZ + 0.02) { sx += v.x; sy += v.y; n++; }
+        }
+      }
+      return { x: sx / n, y: sy / n };
+    };
     this.muzzles = [];
+    this.muzzleHome = [];          // исходные Z стволов — точка возврата после отдачи
+    this.muzzleKick = [];          // время возврата, с — 0 = ствол на месте
+    this.barrels = [];             // узлы стволов: отдача двигает их целиком
     this._muzzleQuat = new THREE.Quaternion();   // переиспользуемый temp
     for (const group of groups) {
       if (group.length === 0) continue;
+      const barrel = new THREE.Object3D();
+      this.gunPitch.add(barrel);
+      // attach переносит меши внутрь barrel, сохраняя мировые позиции.
+      group.forEach(part => barrel.attach(part));
       const box = localBox(group, model);
       const muzzle = new THREE.Object3D();
+      const dp = muzzlePoint(group, box);
       muzzle.position.set(
-        box.getCenter(new THREE.Vector3()).x - pivotPos.x,
-        box.max.y - pivotPos.y,
+        dp.x - pivotPos.x,
+        dp.y - pivotPos.y,
         box.min.z - pivotPos.z
       );
-      this.gunPitch.add(muzzle);
+      barrel.add(muzzle);
+      this.barrels.push(barrel);
       this.muzzles.push(muzzle);
+      this.muzzleHome.push(barrel.position.z);
+      this.muzzleKick.push(0);
     }
+  }
+
+  /**
+   * Отдача ствола: мгновенный откат назад (в +Z локально, в сторону хвоста
+   * стрелка), затем плавный возврат за MUZZLE_RECOVER_TIME.
+   */
+  kickMuzzle(index) {
+    if (this.muzzles.length === 0) return;
+    index %= this.muzzles.length;
+    this.barrels[index].position.z = this.muzzleHome[index] + MUZZLE_RECOIL_M / this._modelScale;
+    this.muzzleKick[index] = MUZZLE_RECOVER_TIME;
   }
 
   /**
@@ -664,6 +710,16 @@ export class Plane {
   }
 
   update(dt) {
+    // Возврат стволов после отдачи: плавно к домашней позиции за 0.3 с.
+    for (let i = 0; i < this.barrels.length; i++) {
+      if (this.muzzleKick[i] <= 0) continue;
+      this.muzzleKick[i] = Math.max(this.muzzleKick[i] - dt, 0);
+      const k = this.muzzleKick[i] / MUZZLE_RECOVER_TIME;
+      // ease-out: быстро в начале, плавно у цели.
+      const t = 1 - (1 - k) * (1 - k);
+      this.barrels[i].position.z = this.muzzleHome[i] + (MUZZLE_RECOIL_M / this._modelScale) * t;
+    }
+
     if (this.propPivot) {
       this.propSpeed = this.engineOn
         ? Math.min(PROP_MAX_SPEED, this.propSpeed + PROP_ACCEL * dt)

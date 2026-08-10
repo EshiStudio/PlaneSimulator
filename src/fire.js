@@ -21,6 +21,7 @@ export class Fire {
     this.scene = scene;
     this.audio = null;
     this.masterGain = null;
+    this.buffer = null;
 
     this.tracers = [];
     for (let i = 0; i < TRACER_COUNT; i++) {
@@ -105,39 +106,21 @@ export class Fire {
     }
   }
 
-  /** Пулемётный хлопок: шумовой выброс + низкий удар. */
+  /** Выстрел из mp3: тот же буфер переигрывается со случайной высотой. */
   #bang() {
     if (!this.#ensureAudio()) return;
     if (this.audio.state === 'suspended') this.audio.resume();
+    if (!this.buffer) return;   // mp3 ещё грузится — первый выстрел без звука
     const t = this.audio.currentTime;
-
-    const dur = 0.045;
-    const buffer = this.audio.createBuffer(1, Math.ceil(this.audio.sampleRate * dur), this.audio.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < data.length; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 2);
-    }
     const source = this.audio.createBufferSource();
-    source.buffer = buffer;
-    const filter = this.audio.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 900 * (0.85 + Math.random() * 0.3);
+    source.buffer = this.buffer;
+    // Девиация только вниз: 0.9–1.0, чтобы выстрел не звучал пискляво.
+    source.playbackRate.value = 0.9 + Math.random() * 0.1;
+    source.detune.value = -Math.random() * 60;
     const gain = this.audio.createGain();
-    gain.gain.setValueAtTime(1, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    source.connect(filter).connect(gain).connect(this.masterGain);
+    gain.gain.value = 1;
+    source.connect(gain).connect(this.masterGain);
     source.start(t);
-
-    const osc = this.audio.createOscillator();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(110, t);
-    osc.frequency.exponentialRampToValueAtTime(45, t + 0.07);
-    const oscGain = this.audio.createGain();
-    oscGain.gain.setValueAtTime(0.5, t);
-    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
-    osc.connect(oscGain).connect(this.masterGain);
-    osc.start(t);
-    osc.stop(t + 0.07);
   }
 
   #ensureAudio() {
@@ -149,10 +132,21 @@ export class Fire {
       this.masterGain = this.audio.createGain();
       this.masterGain.gain.value = 0.35;   // чтобы очередь не оглушала
       this.masterGain.connect(this.audio.destination);
+      this.#loadBuffer();
       return true;
     } catch {
       this.audio = null;
       return false;
     }
+  }
+
+  /** Асинхронно декодирует assets/gunfire.mp3 в AudioBuffer. */
+  #loadBuffer() {
+    const url = new URL('../assets/gunfire.mp3', import.meta.url).href;
+    fetch(url)
+      .then(res => (res.ok ? res.arrayBuffer() : Promise.reject(res.status)))
+      .then(data => this.audio.decodeAudioData(data))
+      .then(buffer => { this.buffer = buffer; })
+      .catch(err => console.warn('Звук выстрела не загрузился:', err));
   }
 }

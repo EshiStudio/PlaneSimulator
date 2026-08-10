@@ -200,6 +200,7 @@ function animate() {
         fireTimer = FIRE_INTERVAL;
         barrel = 1 - barrel;
         if (plane.getMuzzle(barrel, muzzlePos, muzzleDir)) {
+          plane.kickMuzzle(barrel);   // отдача: ствол откатывается назад
           // Прицельная точка — на луче взгляда, на дистанции пристрелки.
           // Выстрел из дула в неё: параллакс глаза и ствола не уводит пули.
           camera.getWorldDirection(muzzleDir);
