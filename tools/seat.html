@@ -37,7 +37,12 @@ plane.load('../assets/stylized_ww1_plane.glb').then(() => {
   console.log(`SEAT глаза в мире: (${eye.x.toFixed(2)}, ${eye.y.toFixed(2)}, ${eye.z.toFixed(2)})`);
 
   // Ориентиры кабины в системе координат САМОЛЁТА (то же, что SEAT_OFFSET).
-  const probe = { polySurface212: 'фюзеляж', polySurface217: 'заголовник', polySurface228: 'обод кабины', polySurface182: 'верхнее крыло' };
+  const probe = {
+    polySurface212: 'фюзеляж', polySurface217: 'заголовник', polySurface228: 'обод кабины',
+    polySurface182: 'верхнее крыло',
+    polySurface231: 'пушка A', polySurface232: 'пушка B',
+    polySurface236: 'пушка C', polySurface237: 'пушка D',
+  };
   plane.group.traverse(node => {
     if (!node.isMesh) return;
     const key = node.name.split('_')[0];
