@@ -34,7 +34,10 @@ export function bindInput(domElement, actions) {
     }
     if (event.code === 'Space') {
       event.preventDefault();
-      actions.toggleEngine();
+      // Пешком Пробел — прыжок (см. jumpHeld), в кабине — двигатель.
+      if (actions.isSeated?.()) actions.toggleEngine();
+      else { /* прыжок обрабатывается каждый кадр по heldKeys */ }
+      heldKeys.add(event.code);
       return;
     }
     heldKeys.add(event.code);
@@ -44,8 +47,12 @@ export function bindInput(domElement, actions) {
   // Уход фокуса (Alt+Tab с зажатой W) иначе оставлял клавишу «залипшей».
   addEventListener('blur', () => heldKeys.clear());
 
-  // Свободный обзор: камера следует за курсором без нажатия кнопок.
-  // lastX/lastY обновляются при входе курсора, чтобы не давать рывок.
+  // Мышь ведёт себя по-разному в двух режимах:
+  //   пешком — pointer lock: клик захватывает курсор, поворот по movementX/Y;
+  //   в кабине — свободный курсор: камера следует за ним без захвата,
+  //   ЛКМ стреляет (как Input.MOUSE_MODE_VISIBLE + огонь в Godot).
+  let locked = false;       // pointer lock активен (пешком)
+  let dragging = false;     // временное снятие захвата — катим дельту руками
   let lastX = 0;
   let lastY = 0;
   let hasMouse = false;
@@ -55,33 +62,71 @@ export function bindInput(domElement, actions) {
     lastY = event.clientY;
   });
 
-  domElement.addEventListener('pointermove', event => {
-    if (!hasMouse) {
-      hasMouse = true;
-      lastX = event.clientX;
-      lastY = event.clientY;
+  // В кабине курсор свободен: свободная наводка пулемёта.
+  document.addEventListener('mousemove', event => {
+    if (locked) {
+      turnView(event.movementX * VIEW_YAW_SENSITIVITY, event.movementY * VIEW_PITCH_SENSITIVITY);
+      domElement.classList.add('pointer-locked');
       return;
     }
-    const dx = event.clientX - lastX;
-    const dy = event.clientY - lastY;
-    lastX = event.clientX;
-    lastY = event.clientY;
-    turnView(dx * VIEW_YAW_SENSITIVITY, dy * VIEW_PITCH_SENSITIVITY);
+    if (dragging) {
+      const dx = event.clientX - lastX;
+      const dy = event.clientY - lastY;
+      lastX = event.clientX;
+      lastY = event.clientY;
+      turnView(dx * VIEW_YAW_SENSITIVITY, dy * VIEW_PITCH_SENSITIVITY);
+      return;
+    }
+    if (actions.isSeated?.()) {
+      if (!hasMouse) {
+        hasMouse = true;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        return;
+      }
+      const dx = event.clientX - lastX;
+      const dy = event.clientY - lastY;
+      lastX = event.clientX;
+      lastY = event.clientY;
+      turnView(dx * VIEW_YAW_SENSITIVITY, dy * VIEW_PITCH_SENSITIVITY);
+    }
   });
 
   domElement.addEventListener('pointerleave', () => { hasMouse = false; });
 
-  // ЛКМ — огонь (в кабине её обрабатывает main). Поворот камеры на неё не завязан.
   domElement.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
-    actions.fireChange?.(true);
+    if (actions.isSeated?.()) {
+      // В кабине клик не захватывает мышь — только огонь.
+      actions.fireChange?.(true);
+      return;
+    }
+    // Пешком клик по холсту захватывает мышь (как MOUSE_MODE_CAPTURED).
+    if (!locked) domElement.requestPointerLock();
   });
 
   addEventListener('pointerup', event => {
     if (event.button !== 0) return;
-    actions.fireChange?.(false);
+    if (actions.isSeated?.()) actions.fireChange?.(false);
   });
 
+  const stopDrag = event => {
+    if (!dragging) return;
+    dragging = false;
+    domElement.classList.remove('dragging', 'pointer-locked');
+    if (domElement.hasPointerCapture(event.pointerId)) {
+      domElement.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  document.addEventListener('pointerlockchange', () => {
+    locked = document.pointerLockElement === domElement;
+    domElement.classList.toggle('pointer-locked', locked);
+    domElement.classList.toggle('dragging', !locked && dragging);
+  });
+
+  domElement.addEventListener('pointerup', stopDrag);
+  domElement.addEventListener('pointercancel', stopDrag);
   domElement.addEventListener('contextmenu', event => event.preventDefault());
 }
 
@@ -91,6 +136,16 @@ const axis = (negative, positive) =>
 /** Ход пешком: +1 вперёд, +1 вправо. */
 export function walkInput() {
   return { forward: axis('KeyS', 'KeyW'), strafe: axis('KeyA', 'KeyD') };
+}
+
+/** Пробел зажат (пешком — прыжок, авто-банни-хоп как в оригинале). */
+export function jumpHeld() {
+  return heldKeys.has('Space');
+}
+
+/** Ctrl зажат — скольжение. */
+export function slideHeld() {
+  return heldKeys.has('ControlLeft') || heldKeys.has('ControlRight');
 }
 
 /** Те же клавиши в кабине управляют поверхностями. */

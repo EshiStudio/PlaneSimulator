@@ -1,3 +1,8 @@
 server.log
 server.err
 *.log
+
+# Godot cache
+SHOOTER/.godot/
+# temporary render tests
+.tmptest/

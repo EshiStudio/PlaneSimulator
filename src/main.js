@@ -1,14 +1,16 @@
 // Точка входа: связывает сцену, самолёт, персонажа и ввод, крутит главный цикл.
 import * as THREE from 'three';
 import { scene, camera, renderer, updateGround, updateSun } from './scene.js';
-import { view, updateFirstPersonCamera, viewForward, viewRight } from './camera.js';
+import { view, updateFirstPersonCamera, updateCameraLean } from './camera.js';
 import { Plane } from './plane.js';
 import { Character } from './character.js';
-import { bindInput, walkInput, clearFlightControls } from './input.js';
+import { PlayerPhysics, MAX_WALK_SPEED } from './player.js';
+import { renderFrame } from './postfx.js';
+import { bindInput, walkInput, jumpHeld, slideHeld, clearFlightControls } from './input.js';
 import { Hands } from './hands.js';
 import { Fire } from './fire.js';
 import { setStatus, clearStatus } from './status.js';
-import { CHARACTER_HEIGHT, WALK_SPEED, BOARD_DISTANCE, SEAT_OFFSET } from './constants.js';
+import { CHARACTER_HEIGHT, BOARD_DISTANCE, SEAT_OFFSET } from './constants.js';
 
 const MODEL_URL = new URL('../assets/stylized_ww1_plane.glb', import.meta.url).href;
 const MAX_FRAME_DT = 0.05;
@@ -20,10 +22,6 @@ const FIRE_SPREAD = 0.012;    // рад — конус разброса трас
 // попадают туда, куда смотрит прицел, несмотря на смещение дула от глаз.
 const SIGHT_DISTANCE = 40;    // м
 
-// Прыжок: ускорение свободного падения выше земного, чтобы прыжок был
-// читаемым. Высота при таких числах ~1.1 м.
-const JUMP_SPEED = 6.0;       // м/с — начальная скорость прыжка
-const GRAVITY = 16;           // м/с²
 // Габариты самолёта для пешей коллизии + радиус персонажа: через них не
 // пройти. Высота не участвует: перепрыгнуть самолёт нельзя всё равно.
 const PLANE_HALF_W = 3.3;     // полуразмах с запасом
@@ -47,12 +45,13 @@ character.faceTowards(plane.group.position.x, plane.group.position.z);
 view.yaw = character.group.rotation.y;
 
 const hands = new Hands();
+const player = new PlayerPhysics();
 const fire = new Fire(scene);
 let seated = false;
+let onFloor = true;
 let fireActive = false;   // зажата ЛКМ в кабине
 let fireTimer = 0;
 let barrel = 0;           // какой ствол стреляет следующим
-let jumpVelocity = 0;     // вертикальная скорость персонажа, м/с
 
 /** Посадка в самолёт и высадка по клавише E. */
 function toggleSeat() {
@@ -66,6 +65,8 @@ function toggleSeat() {
     character.group.position.y = 0;
     character.group.rotation.set(0, view.yaw, 0);
     seated = false;
+    player.velocity.set(0, 0, 0);
+    onFloor = true;
     return;
   }
 
@@ -79,10 +80,10 @@ function toggleSeat() {
   character.group.rotation.set(0, 0, 0);
   view.yaw = plane.yaw;
   seated = true;
-  jumpVelocity = 0;
 }
 
 bindInput(renderer.domElement, {
+  isSeated: () => seated,
   movePlane: (dx, dz) => {
     // Стрелок самолётом не управляет — только пулемётом.
     if (seated) return;
@@ -91,7 +92,6 @@ bindInput(renderer.domElement, {
   toggleEngine: () => {
     // Пешком Пробел — прыжок, в кабине — двигатель.
     if (seated) plane.engineOn = !plane.engineOn;
-    else if (character.group.position.y <= 0.001) jumpVelocity = JUMP_SPEED;
   },
   toggleSeat,
   fireChange: active => {
@@ -113,33 +113,40 @@ crosshair.style.display = 'block';
 const clock = new THREE.Clock();
 const deg = radians => Math.round(THREE.MathUtils.radToDeg(radians));
 const eye = new THREE.Vector3();
-const step = new THREE.Vector3();
-const forward = new THREE.Vector3();
-const right = new THREE.Vector3();
 const muzzlePos = new THREE.Vector3();
 const muzzleDir = new THREE.Vector3();
 const aimPoint = new THREE.Vector3();
 const X_AXIS = new THREE.Vector3(1, 0, 0);
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
-function walk(dt, { forward: f, strafe: s }) {
-  if (f === 0 && s === 0) return;
-  viewForward(forward).multiplyScalar(f);
-  viewRight(right).multiplyScalar(s);
-  step.copy(forward).add(right);
-  if (step.lengthSq() === 0) return;
-  step.normalize().multiplyScalar(WALK_SPEED * dt);
+// «Ноги» стоят на земле (y=0); при прыжке голова поднимается на velocity.y.
+const GROUND_Y = 0;
+
+function walk(dt, input) {
+  player.update(dt, input, onFloor, view.yaw);
 
   // Коллизия с самолётом: скольжение по осям порознь, чтобы не застревать
   // на стыке клетки с бортом и всё же огибать крыло.
   const px = plane.group.position.x;
   const pz = plane.group.position.z;
   const blocked = (x, z) => Math.abs(x - px) < PLANE_HALF_W && Math.abs(z - pz) < PLANE_HALF_L;
-  const nx = character.group.position.x + step.x;
-  const nz = character.group.position.z + step.z;
-  if (!blocked(nx, character.group.position.z)) character.group.position.x = nx;
-  if (!blocked(character.group.position.x, nz)) character.group.position.z = nz;
+  const p = character.group.position;
+  const nx = p.x + player.velocity.x * dt;
+  const nz = p.z + player.velocity.z * dt;
+  if (!blocked(nx, p.z)) p.x = nx;
+  if (!blocked(p.x, nz)) p.z = nz;
+  p.y += player.velocity.y * dt;
+  if (p.y <= GROUND_Y) {
+    p.y = GROUND_Y;
+    onFloor = true;
+  } else {
+    onFloor = false;
+  }
   character.group.rotation.y = view.yaw;   // корпус смотрит туда же, куда взгляд
+
+  // Как в `_update_camera_motion`: скорость фильтруется и нормируется на max_speed.
+  const speedFactor = Math.min(player.filteredSpeed / MAX_WALK_SPEED, 1.25);
+  updateCameraLean(dt, player.filteredInput, speedFactor, player.stanceAmount);
 }
 
 /** Знак отклонения поверхности: вверх / вниз / нейтраль. */
@@ -166,7 +173,8 @@ function updateHud() {
       `пешком   позиция (${c.x.toFixed(1)}, ${c.z.toFixed(1)})   ` +
       `до самолёта ${c.distanceTo(p).toFixed(1)} м   ` +
       `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}\n` +
-      `W/S/A/D — идти | Пробел — прыжок | мышь — осмотреться | ${near ? 'E — сесть в самолёт' : 'подойдите к самолёту и нажмите E'}`;
+      `W/S/A/D — идти | мышь — осмотреться | Пробел — прыжок | Ctrl — скольжение | ` +
+      `${near ? 'E — сесть в самолёт' : 'подойдите к самолёту и нажмите E'}`;
   }
 }
 
@@ -174,7 +182,6 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), MAX_FRAME_DT);
 
-  const input = walkInput();
   if (seated) {
     // Стрелок наводит пулемёт мышью: углы отсчитываются от самолёта, чтобы
     // наводка не сбивалась, когда машина разворачивается.
@@ -184,6 +191,7 @@ function animate() {
     clearFlightControls(plane);   // поверхности стоят в нейтрали
     // В кабине руки на пулемёте: без ходьбы и без качания от шага.
     hands.update(dt, { x: 0, y: 0 }, 0);
+    updateCameraLean(dt, { x: 0, y: 0 }, 0, 0);   // не оставлять крен после бега
 
     // Огонь: очередь с темпом пулемёта, стволы спарки чередуются.
     if (fireActive) {
@@ -206,18 +214,10 @@ function animate() {
     }
   } else {
     clearFlightControls(plane);
-    // Прыжок/приземление: высота ног над полом.
-    jumpVelocity -= GRAVITY * dt;
-    const flyY = character.group.position.y + jumpVelocity * dt;
-    if (flyY <= 0) {
-      character.group.position.y = 0;
-      jumpVelocity = 0;
-    } else {
-      character.group.position.y = flyY;
-    }
+    const input = { ...walkInput(), jump: jumpHeld(), slide: slideHeld() };
     walk(dt, input);
-    const moving = input.forward !== 0 || input.strafe !== 0;
-    hands.update(dt, { x: input.strafe, y: input.forward }, moving ? WALK_SPEED : 0);
+    const moving = player.horizontalSpeed > 0.05;
+    hands.update(dt, { x: input.strafe, y: input.forward }, moving ? player.filteredSpeed : 0);
   }
 
   fire.update(dt);
@@ -228,7 +228,7 @@ function animate() {
   updateSun(plane.group.position);
   updateHud();
 
-  renderer.render(scene, camera);
+  renderFrame();
 }
 
 animate();
