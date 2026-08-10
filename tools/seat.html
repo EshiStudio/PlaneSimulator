@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><title>seat</title>
+<style>html,body{margin:0;overflow:hidden}canvas{display:block}</style></head>
+<body>
+<!-- Персонаж, посаженный в кабину: ?view=eye — взгляд пилота,
+     ?view=side | back — вид снаружи, чтобы выверить SEAT_OFFSET. -->
+<div id="status" hidden></div><div id="hud"></div>
+<script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { scene, camera, renderer, updateGround, updateSun } from '../src/scene.js';
+import { view, updateFirstPersonCamera } from '../src/camera.js';
+import { Plane } from '../src/plane.js';
+import { Character } from '../src/character.js';
+import { CHARACTER_HEIGHT, SEAT_OFFSET } from '../src/constants.js';
+
+const params = new URLSearchParams(location.search);
+const viewName = params.get('view') ?? 'eye';
+
+const plane = new Plane();
+scene.add(plane.group);
+const character = new Character();
+character.setHeight(CHARACTER_HEIGHT);
+
+plane.load('../assets/stylized_ww1_plane.glb').then(() => {
+  plane.group.add(character.group);
+  // ?y= и ?z= переопределяют SEAT_OFFSET — так подбирается место пилота.
+  const seatY = parseFloat(params.get('y') ?? SEAT_OFFSET.y);
+  const seatZ = parseFloat(params.get('z') ?? SEAT_OFFSET.z);
+  character.group.position.set(SEAT_OFFSET.x, seatY, seatZ);
+  character.group.rotation.set(0, 0, 0);   // лицом к хвосту, как задний стрелок
+  character.update(0.016, null);
+  plane.group.updateMatrixWorld(true);
+
+  const p = plane.group.position;
+  const eye = character.eyePosition(new THREE.Vector3());
+  console.log(`SEAT глаза в мире: (${eye.x.toFixed(2)}, ${eye.y.toFixed(2)}, ${eye.z.toFixed(2)})`);
+
+  // Ориентиры кабины в системе координат САМОЛЁТА (то же, что SEAT_OFFSET).
+  const probe = { polySurface212: 'фюзеляж', polySurface217: 'заголовник', polySurface228: 'обод кабины', polySurface182: 'верхнее крыло' };
+  plane.group.traverse(node => {
+    if (!node.isMesh) return;
+    const key = node.name.split('_')[0];
+    if (!(key in probe)) return;
+    const box = new THREE.Box3().setFromObject(node);
+    const c = box.getCenter(new THREE.Vector3());
+    plane.group.worldToLocal(c);
+    const top = box.max.y - p.y;
+    console.log(`SEAT ${probe[key]}: центр (${c.x.toFixed(2)}, ${c.y.toFixed(2)}, ${c.z.toFixed(2)}), верх y=${top.toFixed(2)}`);
+  });
+
+  if (viewName === 'eye') {
+    character.hideHeadForOwner(true);
+    view.yaw = 0;            // взгляд на хвост (-Z)
+    view.pitch = -0.12;
+    updateFirstPersonCamera(eye);
+  } else if (viewName === 'side') {
+    camera.position.set(p.x + 4.2, p.y + 2.4, p.z + 1.2);
+    camera.rotation.set(0, 0, 0);
+    camera.lookAt(p.x, p.y + 1.5, p.z);
+  } else {
+    camera.position.set(p.x - 0.6, p.y + 3.0, p.z - 4.2);
+    camera.rotation.set(0, 0, 0);
+    camera.lookAt(p.x, p.y + 1.4, p.z + 0.2);
+  }
+
+  updateGround();
+  updateSun(p);
+  const draw = () => { requestAnimationFrame(draw); renderer.render(scene, camera); };
+  draw();
+}).catch(e => console.log('SEAT ОШИБКА ' + (e?.message ?? e)));
+</script>
+</body></html>

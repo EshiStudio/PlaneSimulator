@@ -7,12 +7,23 @@ export const GROUND_SIZE = 500;  // сторона плоскости, след�
 export const FADE_START = 170;   // радиус начала растворения сетки
 export const FADE_END = 245;     // радиус полного растворения
 
-// --- Камера преследования ---
-export const CAM_DEFAULT = { dist: 5, height: 3.5, orbit: 0 };
-export const CAM_MIN_DIST = 3;
-export const CAM_MAX_DIST = 100;
-export const CAM_MIN_HEIGHT = 0.5;
-export const CAM_MAX_HEIGHT = 40;
-export const CAM_HEIGHT_SPEED = 8;      // Q/E, м/с
-export const CAM_ORBIT_SENSITIVITY = 0.008;
-export const CAM_HEIGHT_SENSITIVITY = 0.04;
+// --- Взгляд от первого лица ---
+export const VIEW_PITCH_LIMIT = Math.PI / 2 - 0.08;  // чуть меньше зенита
+export const VIEW_YAW_SENSITIVITY = 0.005;
+export const VIEW_PITCH_SENSITIVITY = 0.005;
+
+// --- Персонаж ---
+// У фигуры крупная голова (0.68 из 2.35 роста), а между ободом кабины (y=1.16)
+// и низом верхнего крыла (y≈1.39) всего ~0.23 м. Отсюда рост: при большем
+// голова упирается в крыло.
+export const CHARACTER_HEIGHT = 1.45;   // метры
+export const WALK_SPEED = 3.2;          // м/с
+// Радиус меряется до ЦЕНТРА самолёта, а размах 6 м: у законцовки крыла уже
+// набегает больше трёх метров, поэтому радиус щедрый.
+export const BOARD_DISTANCE = 5.0;
+// Место пилота в системе координат самолёта. Фюзеляж смещён от центра модели,
+// поэтому x отрицательный; глаза выходят чуть выше обода кабины.
+// Высота подобрана по обзору: ниже — глаза уходят внутрь фюзеляжа, выше —
+// в верхнее крыло. Макушка при этом чуть выступает над крылом, но в игре
+// голова скрыта от самого игрока.
+export const SEAT_OFFSET = { x: -0.20, y: 0.45, z: -0.36 };

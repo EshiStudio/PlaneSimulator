@@ -1,38 +1,34 @@
-// Камера преследования: всегда за хвостом самолёта, управляется только мышью и Q/E.
+// Камера от первого лица: стоит в глазах персонажа, направление задаётся мышью.
 import * as THREE from 'three';
 import { camera } from './scene.js';
-import { CAM_DEFAULT, CAM_MIN_DIST, CAM_MAX_DIST, CAM_MIN_HEIGHT, CAM_MAX_HEIGHT } from './constants.js';
+import { VIEW_PITCH_LIMIT } from './constants.js';
 
-export const camState = { ...CAM_DEFAULT };
+// Курс и тангаж взгляда в мировых координатах. При yaw = 0 взгляд направлен
+// по -Z — так же, как локальное «вперёд» у персонажа.
+export const view = { yaw: 0, pitch: 0 };
 
-export function resetCamera() {
-  Object.assign(camState, CAM_DEFAULT);
+export function resetView() {
+  view.pitch = 0;
 }
 
-export function zoomCamera(factor) {
-  camState.dist = THREE.MathUtils.clamp(camState.dist * factor, CAM_MIN_DIST, CAM_MAX_DIST);
+export function turnView(dYaw, dPitch) {
+  view.yaw -= dYaw;
+  view.pitch = THREE.MathUtils.clamp(view.pitch - dPitch, -VIEW_PITCH_LIMIT, VIEW_PITCH_LIMIT);
 }
 
-export function raiseCamera(delta) {
-  camState.height = THREE.MathUtils.clamp(camState.height + delta, CAM_MIN_HEIGHT, CAM_MAX_HEIGHT);
+/** Единичный вектор «вперёд» по курсу взгляда, без наклона. */
+export function viewForward(target = new THREE.Vector3()) {
+  return target.set(-Math.sin(view.yaw), 0, -Math.cos(view.yaw));
 }
 
-export function orbitCamera(delta) {
-  camState.orbit -= delta;
+/** Единичный вектор «вправо» относительно взгляда. */
+export function viewRight(target = new THREE.Vector3()) {
+  return target.set(Math.cos(view.yaw), 0, -Math.sin(view.yaw));
 }
 
-const lookTarget = new THREE.Vector3();
-
-export function updateChaseCamera(planePosition, planeYaw) {
-  // направление от самолёта к камере: за хвост (хвост = -Z модели)
-  const tailAngle = planeYaw + camState.orbit;
-  const dx = -Math.sin(tailAngle);
-  const dz = -Math.cos(tailAngle);
-  camera.position.set(
-    planePosition.x + dx * camState.dist,
-    planePosition.y + camState.height,
-    planePosition.z + dz * camState.dist
-  );
-  lookTarget.set(planePosition.x, planePosition.y + 1.2, planePosition.z);
-  camera.lookAt(lookTarget);
+export function updateFirstPersonCamera(eyePosition) {
+  camera.position.copy(eyePosition);
+  // Порядок YXZ: сначала курс, затем тангаж — иначе горизонт заваливается.
+  camera.rotation.order = 'YXZ';
+  camera.rotation.set(view.pitch, view.yaw, 0);
 }

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><title>board</title>
+<style>html,body{margin:0;overflow:hidden;height:100%}iframe{border:0;width:100vw;height:100vh;display:block}</style></head>
+<body>
+<!-- Проверка всей цепочки: игра открывается в iframe, сюда шлются настоящие
+     нажатия клавиш. ?walk=мс — сколько идти вперёд, ?board=1 — сесть в самолёт. -->
+<iframe id="game" src="../index.html"></iframe>
+<script>
+const params = new URLSearchParams(location.search);
+const walkMs = parseInt(params.get('walk') ?? '0', 10);
+const board = params.get('board') === '1';
+const game = document.getElementById('game');
+
+const key = (type, code) => game.contentWindow.dispatchEvent(
+  new KeyboardEvent(type, { code, bubbles: true })
+);
+
+game.addEventListener('load', () => {
+  const win = game.contentWindow;
+  // Ждём загрузки модели: пока она не пришла, персонаж ещё не на месте.
+  setTimeout(() => {
+    if (walkMs > 0) {
+      key('keydown', 'KeyW');
+      setTimeout(() => {
+        key('keyup', 'KeyW');
+        if (board) {
+          key('keydown', 'KeyE');
+          key('keyup', 'KeyE');
+        }
+        console.log('BOARD готово: прошли ' + walkMs + ' мс' + (board ? ', нажали E' : ''));
+      }, walkMs);
+    } else if (board) {
+      key('keydown', 'KeyE');
+      key('keyup', 'KeyE');
+      console.log('BOARD нажали E без ходьбы');
+    }
+  }, 3000);
+});
+</script>
+</body></html>
