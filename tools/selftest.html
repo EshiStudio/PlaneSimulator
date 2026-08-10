@@ -9,54 +9,56 @@ import { Plane } from '../src/plane.js';
 
 const log = m => console.log('TEST ' + m);
 const deg = r => THREE.MathUtils.radToDeg(r).toFixed(1);
+const run = (seconds) => { for (let i = 0; i < seconds * 60; i++) plane.update(1 / 60); };
 
 const plane = new Plane();
 const scene = new THREE.Scene();
 scene.add(plane.group);
 
 plane.load('../assets/stylized_ww1_plane.glb').then(() => {
-  log(`групп закрылков: ${plane.flapGroups.length} (ожидается 4)`);
-  const toModel = new THREE.Matrix4().copy(plane.model.matrixWorld).invert();
-  plane.flapGroups.forEach(fg => {
-    const kids = fg.group.children.map(c => c.name.split('_')[0]).join('+');
-    // Габариты сплошной панели в собственных координатах модели.
-    const panel = fg.group.children.find(c => !c.name.includes('Tooner'));
-    const b = new THREE.Box3();
-    const m = new THREE.Matrix4().multiplyMatrices(toModel, panel.matrixWorld);
-    const pos = panel.geometry.attributes.position;
-    const v = new THREE.Vector3();
-    for (let i = 0; i < pos.count; i++) b.expandByPoint(v.fromBufferAttribute(pos, i).applyMatrix4(m));
-    const hinge = fg.group.parent;   // внешний узел держит положение и ось
-    const o = hinge.position;
-    const d = new THREE.Vector3(1, 0, 0).applyQuaternion(hinge.quaternion);
-    log(`  ${fg.level} max=${deg(fg.maxAngle)}° меши=${kids}`);
-    log(`     панель z ${b.min.z.toFixed(3)}..${b.max.z.toFixed(3)}  y ${b.min.y.toFixed(3)}..${b.max.y.toFixed(3)}  x ${b.min.x.toFixed(3)}..${b.max.x.toFixed(3)}`);
-    log(`     ось: origin (${o.x.toFixed(3)}, ${o.y.toFixed(3)}, ${o.z.toFixed(3)})  dir (${d.x.toFixed(3)}, ${d.y.toFixed(3)}, ${d.z.toFixed(3)})`);
+  log(`элеронов: ${plane.ailerons.length} (ожидается 4)`);
+  plane.ailerons.forEach(s => {
+    const kids = s.pivot.children.map(c => c.name.split('_')[0]).join('+');
+    log(`  ${s.side}${s.level} меши=${kids}`);
   });
+  log(`половин руля высоты: ${plane.elevators.length} (ожидается 2)`);
+  plane.elevators.forEach(p => log(`  меши=${p.children.map(c => c.name.split('_')[0]).join('+')}`));
   log(`винт: ${plane.propPivot ? plane.propPivot.children.length + ' мешей' : 'НЕ НАЙДЕН'}`);
 
   const box = new THREE.Box3().setFromObject(plane.group);
-  log(`bbox самолёта: y ${box.min.y.toFixed(3)}..${box.max.y.toFixed(3)}, размах x ${(box.max.x - box.min.x).toFixed(2)} м`);
-  log(`позиция группы: (${plane.group.position.x}, ${plane.group.position.z})`);
+  log(`bbox: y ${box.min.y.toFixed(3)}..${box.max.y.toFixed(3)}, размах ${(box.max.x - box.min.x).toFixed(2)} м`);
 
-  // Выпускаем закрылки и заводим двигатель, прогоняем 1 с по 60 кадров.
-  plane.flapsOut = true;
-  plane.engineOn = true;
-  for (let i = 0; i < 60; i++) plane.update(1 / 60);
-  log(`после 1 с: закрылки верх=${deg(plane.flapAngleUpper)}° низ=${deg(plane.flapAngleLower)}° (ожидается 25/35)`);
-  log(`винт: ${plane.propSpeed.toFixed(1)} рад/с, угол ${plane.propAngle.toFixed(2)} (должен быть < 6.29)`);
+  const right = plane.ailerons.find(s => s.side === 'R');
+  const left = plane.ailerons.find(s => s.side === 'L');
 
-  // Убираем обратно.
-  plane.flapsOut = false;
-  for (let i = 0; i < 60; i++) plane.update(1 / 60);
-  log(`после уборки: верх=${deg(plane.flapAngleUpper)}° низ=${deg(plane.flapAngleLower)}°  (ожидается 0/0)`);
+  // W — руль высоты вверх, S — вниз.
+  plane.pitchInput = 1;
+  run(1);
+  log(`W: руль высоты=${deg(plane.elevatorAngle)}° (ожидается +20, вверх)`);
+  plane.pitchInput = -1;
+  run(1);
+  log(`S: руль высоты=${deg(plane.elevatorAngle)}° (ожидается -20, вниз)`);
 
-  // Долгая работа двигателя не должна копить угол.
-  for (let i = 0; i < 6000; i++) plane.update(1 / 60);
-  log(`угол винта после 100 с: ${plane.propAngle.toFixed(3)} (должен быть < 6.29)`);
+  // D — крен вправо: правый элерон вверх, левый вниз.
+  plane.pitchInput = 0;
+  plane.rollInput = 1;
+  run(1);
+  log(`D: правый элерон=${deg(right.pivot.rotation.x)}° (вверх), левый=${deg(left.pivot.rotation.x)}° (вниз)`);
+  plane.rollInput = -1;
+  run(1);
+  log(`A: правый элерон=${deg(right.pivot.rotation.x)}° (вниз), левый=${deg(left.pivot.rotation.x)}° (вверх)`);
+
+  // Отпустили управление — всё возвращается в нейтраль.
+  plane.rollInput = 0;
+  plane.pitchInput = 0;
+  run(1);
+  log(`отпустили: элероны=${deg(right.pivot.rotation.x)}/${deg(left.pivot.rotation.x)}° руль=${deg(plane.elevatorAngle)}° (ожидается 0)`);
+
+  // Самолёт остаётся на земле: системы полёта пока нет.
+  log(`высота после всех нажатий: ${plane.group.position.y.toFixed(2)} м (ожидается 0)`);
 
   plane.move(0, -1);
-  log(`после стрелки вверх: клетка (${plane.cell.x}, ${plane.cell.z}), мир (${plane.group.position.x}, ${plane.group.position.z}), yaw=${deg(plane.yaw)}°`);
+  log(`стрелка вверх: клетка (${plane.cell.x}, ${plane.cell.z}), yaw=${deg(plane.yaw)}°`);
   log('DONE');
 }).catch(e => log('ОШИБКА ' + (e?.message ?? e)));
 </script>

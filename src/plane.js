@@ -12,9 +12,12 @@ const PROP_MAX_SPEED = 40;            // рад/с (~6.4 об/с)
 const PROP_ACCEL = 18;                // рад/с^2 — плавная раскрутка и торможение
 const TWO_PI = Math.PI * 2;
 
-const FLAP_MAX_ANGLE_UPPER = THREE.MathUtils.degToRad(25);
-const FLAP_MAX_ANGLE_LOWER = THREE.MathUtils.degToRad(35);
-const FLAP_SPEED = THREE.MathUtils.degToRad(120);   // °/с — плавный ход
+// --- Управляющие поверхности ---
+const AILERON_MAX_ANGLE = THREE.MathUtils.degToRad(22);   // крыльевые панели, крен
+const ELEVATOR_MAX_ANGLE = THREE.MathUtils.degToRad(20);  // хвост, тангаж
+const SURFACE_SPEED = THREE.MathUtils.degToRad(180);      // °/с — ход поверхностей
+
+// Полёта пока нет: самолёт стоит на земле, двигаются только поверхности.
 // Порог в СОБСТВЕННЫХ координатах модели: центры панелей по Y — 0.397/0.451
 // (верхнее крыло) и 0.206/0.153 (нижнее), по X — около ±0.45.
 const FLAP_LEVEL_SPLIT_Y = 0.3;
@@ -26,8 +29,109 @@ const ATTACH_BAND = 0.08;
 
 const PROP_BLADE_RE = /^polySurface(304|305|306)_/;
 const PROP_OUTLINE_NAME = 'polySurface406_Tooner_0';
-const FLAP_MESH_RE = /^polySurface(161|165|173|174|407|408|410|411)_/;
+const AILERON_MESH_RE = /^polySurface(161|165|173|174|407|408|410|411)_/;
+// Половины горизонтального оперения. Своих контурных оболочек у них нет —
+// контур хвоста входит в общую оболочку polySurface308_Tooner_0.
+const ELEVATOR_MESH_RE = /^polySurface(200|292)_/;
+const HULL_OUTLINE_NAME = 'polySurface308_Tooner_0';
+// Запас вокруг панели, в котором контурная оболочка считается «хвостовой».
+// Доля размера панели плюс небольшой абсолютный зазор.
+const OUTLINE_MARGIN_RATIO = 0.12;
+const OUTLINE_MARGIN_MIN = 0.004;
 const AXIS_X = new THREE.Vector3(1, 0, 0);
+
+/** Габариты мешей в собственных координатах модели. */
+function localBox(meshes, model) {
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (const mesh of meshes) {
+    const toModel = meshToModelMatrix(mesh, model);
+    const pos = mesh.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      box.expandByPoint(v.fromBufferAttribute(pos, i).applyMatrix4(toModel));
+    }
+  }
+  return box;
+}
+
+/** Новая геометрия из перечисленных треугольников исходной (без индекса). */
+function subGeometry(geometry, triangles) {
+  const index = geometry.index;
+  const result = new THREE.BufferGeometry();
+  for (const [name, attr] of Object.entries(geometry.attributes)) {
+    const size = attr.itemSize;
+    const array = new Float32Array(triangles.length * 3 * size);
+    let w = 0;
+    for (const t of triangles) {
+      for (let corner = 0; corner < 3; corner++) {
+        const i = index ? index.getX(t * 3 + corner) : t * 3 + corner;
+        for (let c = 0; c < size; c++) array[w++] = attr.getComponent(i, c);
+      }
+    }
+    result.setAttribute(name, new THREE.BufferAttribute(array, size));
+  }
+  return result;
+}
+
+/**
+ * Вырезает из общей контурной оболочки куски, попавшие в заданные области, и
+ * возвращает по мешу на область. Нужно для хвоста: его контур входит в общую
+ * оболочку фюзеляжа, и без разреза он остаётся висеть на месте, когда руль
+ * высоты отклоняется. Треугольник уходит в область, только если В НЕЙ ЛЕЖАТ
+ * ВСЕ ТРИ его вершины — иначе в хвост утягивает контур фюзеляжа.
+ */
+function extractOutlineParts(shell, model, regions) {
+  const geometry = shell.geometry;
+  const index = geometry.index;
+  const position = geometry.attributes.position;
+  const toModel = meshToModelMatrix(shell, model);
+  const triangleCount = (index ? index.count : position.count) / 3;
+
+  const parts = regions.map(() => []);
+  const kept = [];
+  const v = new THREE.Vector3();
+
+  for (let t = 0; t < triangleCount; t++) {
+    let owner = -1;
+    for (let r = 0; r < regions.length && owner < 0; r++) {
+      let inside = true;
+      for (let corner = 0; corner < 3 && inside; corner++) {
+        const i = index ? index.getX(t * 3 + corner) : t * 3 + corner;
+        v.fromBufferAttribute(position, i).applyMatrix4(toModel);
+        inside = regions[r].containsPoint(v);
+      }
+      if (inside) owner = r;
+    }
+    if (owner < 0) kept.push(t);
+    else parts[owner].push(t);
+  }
+
+  const meshes = parts.map(triangles => {
+    if (triangles.length === 0) return null;
+    const part = new THREE.Mesh(subGeometry(geometry, triangles), shell.material);
+    part.name = `${shell.name}_part`;
+    part.position.copy(shell.position);
+    part.quaternion.copy(shell.quaternion);
+    part.scale.copy(shell.scale);
+    part.castShadow = false;      // контур тени не отбрасывает
+    part.receiveShadow = false;
+    shell.parent.add(part);
+    return part;
+  });
+
+  if (meshes.some(part => part !== null)) {
+    const remaining = subGeometry(geometry, kept);
+    geometry.dispose();
+    shell.geometry = remaining;
+  }
+  return meshes;
+}
+
+/** Плавное движение значения к цели с ограничением шага. */
+function approach(current, target, step) {
+  if (current < target) return Math.min(target, current + step);
+  return Math.max(target, current - step);
+}
 
 function unionBox(nodes) {
   const box = new THREE.Box3();
@@ -116,17 +220,21 @@ export class Plane {
     this.propAngle = 0;
     this.propSpeed = 0;
 
-    this.flapsOut = false;        // F — выпустить/убрать
-    this.flapGroups = [];
-    this.flapAngleUpper = 0;
-    this.flapAngleLower = 0;
+    // Ввод управления: +1 — руль вверх / крен вправо, -1 — вниз / влево.
+    this.pitchInput = 0;
+    this.rollInput = 0;
+
+    this.ailerons = [];           // крыльевые панели: крен
+    this.elevators = [];          // половины оперения: тангаж
+    this.aileronAngle = 0;
+    this.elevatorAngle = 0;
 
     this.placeAt(0, 0);
   }
 
   placeAt(x, z) {
     this.cell = { x, z };
-    this.group.position.set(x * CELL + CELL / 2, 0, z * CELL + CELL / 2);
+    this.group.position.set(x * CELL + CELL / 2, this.group.position.y, z * CELL + CELL / 2);
   }
 
   move(dx, dz) {
@@ -191,7 +299,33 @@ export class Plane {
     this.model = model;   // собственная система координат модели, нужна для диагностики
 
     this.#buildPropeller(model);
-    this.#buildFlaps(model);
+    this.#buildAilerons(model);
+    this.#buildElevator(model);
+  }
+
+  /**
+   * Сажает набор мешей на шарнир и возвращает узел отклонения.
+   * Узлов ДВА, а не один: внешний стоит на линии крепления к крылу и держит
+   * выравнивание оси, вложенный отклоняет поверхность. Совмещать нельзя —
+   * `rotation` и `quaternion` в three.js это одно состояние, и присваивание
+   * rotation.x стирает выравнивание, из-за чего панель вращается вокруг
+   * произвольной оси и вылезает из крыла.
+   */
+  #mountSurface(model, meshes, label) {
+    const solid = meshes.filter(mesh => !mesh.name.includes('Tooner'));
+    const axis = hingeAxis(solid, model);
+    if (axis === null) {
+      console.warn(`PlaneSimulator: у поверхности ${label} нет пригодной кромки — пропущена`);
+      return null;
+    }
+    const hinge = new THREE.Group();
+    hinge.position.copy(axis.origin);
+    hinge.quaternion.setFromUnitVectors(AXIS_X, axis.dir);
+    const pivot = new THREE.Group();
+    hinge.add(pivot);
+    model.add(hinge);
+    meshes.forEach(mesh => pivot.attach(mesh));
+    return pivot;
   }
 
   /** Лопасти собираются в общий pivot на оси винта, чтобы вращаться вокруг Z. */
@@ -219,14 +353,14 @@ export class Plane {
   }
 
   /**
-   * Закрылки — родные светлые панели задней кромки (161/165 сверху, 173/174
-   * снизу) со своими Tooner-оболочками (407/408/410/411). Каждая панель садится
-   * на шарнир, ось которого идёт вдоль её наклонной передней кромки.
+   * Элероны — родные светлые панели задней кромки (161/165 сверху, 173/174
+   * снизу) со своими Tooner-оболочками (407/408/410/411). Панели одной стороны
+   * ходят вместе, левая и правая — в противоположные стороны (крен).
    */
-  #buildFlaps(model) {
+  #buildAilerons(model) {
     const flapMeshes = [];
     model.traverse(node => {
-      if (node.isMesh && FLAP_MESH_RE.test(node.name)) flapMeshes.push(node);
+      if (node.isMesh && AILERON_MESH_RE.test(node.name)) flapMeshes.push(node);
     });
 
     // Сторону и ярус считаем в СОБСТВЕННЫХ координатах модели. Прежде пороги
@@ -245,36 +379,54 @@ export class Plane {
     });
 
     pairs.forEach((meshes, key) => {
-      const solid = meshes.filter(mesh => !mesh.name.includes('Tooner'));
-      const axis = hingeAxis(solid, model);
-      if (axis === null) {
-        console.warn(`PlaneSimulator: у группы закрылков ${key} нет пригодной кромки — пропущена`);
-        return;
-      }
-
-      // Два узла, а не один: внешний стоит на линии крепления и держит
-      // выравнивание оси по размаху, вложенный отклоняет панель.
-      // Совмещать нельзя — `rotation` и `quaternion` в three.js это одно
-      // состояние, и присваивание rotation.x стирает выравнивание, из-за чего
-      // панель вращается вокруг произвольной оси и вылезает из крыла.
-      const hinge = new THREE.Group();
-      hinge.position.copy(axis.origin);
-      hinge.quaternion.setFromUnitVectors(AXIS_X, axis.dir);
-      const pivot = new THREE.Group();
-      hinge.add(pivot);
-      model.add(hinge);
-      meshes.forEach(mesh => pivot.attach(mesh));
-
-      const level = key[1];
-      this.flapGroups.push({
-        group: pivot,
-        level,
-        maxAngle: level === 'U' ? FLAP_MAX_ANGLE_UPPER : FLAP_MAX_ANGLE_LOWER,
-      });
+      const pivot = this.#mountSurface(model, meshes, `элерон ${key}`);
+      if (pivot === null) return;
+      this.ailerons.push({ pivot, side: key[0], level: key[1] });
     });
 
-    if (this.flapGroups.length === 0) {
-      console.warn('PlaneSimulator: закрылки не найдены — клавиша F ничего не сделает');
+    if (this.ailerons.length === 0) {
+      console.warn('PlaneSimulator: элероны не найдены — крен будет без анимации');
+    }
+  }
+
+  /**
+   * Руль высоты — половины горизонтального оперения (200 слева, 292 справа).
+   * Каждая садится на свой шарнир, обе ходят синхронно.
+   */
+  #buildElevator(model) {
+    const halves = [];
+    let hull = null;
+    model.traverse(node => {
+      if (!node.isMesh) return;
+      if (ELEVATOR_MESH_RE.test(node.name)) halves.push(node);
+      else if (node.name === HULL_OUTLINE_NAME) hull = node;
+    });
+
+    // Контур хвоста живёт в общей оболочке фюзеляжа — вырезаем его куски,
+    // иначе при отклонении руля на его месте остаётся чёрное пятно.
+    let outlineParts = halves.map(() => null);
+    if (hull !== null && halves.length > 0) {
+      const regions = halves.map(mesh => {
+        const box = localBox([mesh], model);
+        const size = box.getSize(new THREE.Vector3());
+        return box.expandByVector(new THREE.Vector3(
+          Math.max(size.x * OUTLINE_MARGIN_RATIO, OUTLINE_MARGIN_MIN),
+          Math.max(size.y * OUTLINE_MARGIN_RATIO, OUTLINE_MARGIN_MIN),
+          Math.max(size.z * OUTLINE_MARGIN_RATIO, OUTLINE_MARGIN_MIN)
+        ));
+      });
+      outlineParts = extractOutlineParts(hull, model, regions);
+    } else {
+      console.warn('PlaneSimulator: общая контурная оболочка не найдена — контур хвоста останется на месте');
+    }
+
+    halves.forEach((mesh, i) => {
+      const group = outlineParts[i] === null ? [mesh] : [mesh, outlineParts[i]];
+      const pivot = this.#mountSurface(model, group, `руль высоты ${mesh.name}`);
+      if (pivot !== null) this.elevators.push(pivot);
+    });
+    if (this.elevators.length === 0) {
+      console.warn('PlaneSimulator: руль высоты не найден — тангаж будет без анимации');
     }
   }
 
@@ -289,21 +441,22 @@ export class Plane {
       this.propPivot.rotation.z = this.propAngle;
     }
 
-    let upper = 0;
-    let lower = 0;
-    for (const fg of this.flapGroups) {
-      const target = this.flapsOut ? -fg.maxAngle : 0;
-      const cur = fg.group.rotation.x;
-      const step = FLAP_SPEED * dt;
-      fg.group.rotation.x = cur < target
-        ? Math.min(target, cur + step)
-        : Math.max(target, cur - step);
+    const surfaceStep = SURFACE_SPEED * dt;
 
-      const angle = Math.max(0, -fg.group.rotation.x);
-      if (fg.level === 'U') upper = Math.max(upper, angle);
-      else lower = Math.max(lower, angle);
+    // Элероны: при крене вправо правая панель идёт вверх, левая вниз.
+    // rotation.x > 0 поднимает заднюю кромку, < 0 опускает.
+    const aileronTarget = this.rollInput * AILERON_MAX_ANGLE;
+    for (const surface of this.ailerons) {
+      const target = surface.side === 'R' ? aileronTarget : -aileronTarget;
+      surface.pivot.rotation.x = approach(surface.pivot.rotation.x, target, surfaceStep);
     }
-    this.flapAngleUpper = upper;
-    this.flapAngleLower = lower;
+    this.aileronAngle = this.ailerons.length > 0 ? this.ailerons[0].pivot.rotation.x : 0;
+
+    // Руль высоты: набор высоты — задняя кромка вверх.
+    const elevatorTarget = this.pitchInput * ELEVATOR_MAX_ANGLE;
+    for (const pivot of this.elevators) {
+      pivot.rotation.x = approach(pivot.rotation.x, elevatorTarget, surfaceStep);
+    }
+    this.elevatorAngle = this.elevators.length > 0 ? this.elevators[0].rotation.x : 0;
   }
 }

@@ -32,10 +32,6 @@ export function bindInput(domElement, plane) {
       plane.engineOn = !plane.engineOn;
       return;
     }
-    if (event.code === 'KeyF') {
-      plane.flapsOut = !plane.flapsOut;
-      return;
-    }
     heldKeys.add(event.code);
   });
 
@@ -85,9 +81,15 @@ export function bindInput(domElement, plane) {
   domElement.addEventListener('contextmenu', event => event.preventDefault());
 }
 
-/** Клавиши, действующие непрерывно (высота камеры по Q/E). */
-export function updateHeldKeys(dt) {
+const axis = (negative, positive) =>
+  (heldKeys.has(positive) ? 1 : 0) - (heldKeys.has(negative) ? 1 : 0);
+
+/** Клавиши, действующие непрерывно: высота камеры Q/E и управление W/S, A/D. */
+export function updateHeldKeys(dt, plane) {
   if (heldKeys.has('KeyQ')) raiseCamera(-CAM_HEIGHT_SPEED * dt);
   if (heldKeys.has('KeyE')) raiseCamera(CAM_HEIGHT_SPEED * dt);
+
+  plane.pitchInput = axis('KeyS', 'KeyW');   // W — руль высоты вверх, S — вниз
+  plane.rollInput = axis('KeyA', 'KeyD');    // D — крен вправо, A — влево
   return camState;
 }

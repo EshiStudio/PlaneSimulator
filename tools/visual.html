@@ -2,6 +2,9 @@
 <html lang="ru"><head><meta charset="UTF-8"><title>visual</title>
 <style>html,body{margin:0;overflow:hidden}canvas{display:block}</style></head>
 <body>
+<!-- Рендер сцены с заданным положением управляющих поверхностей.
+     ?pitch=1|-1 — руль высоты, ?roll=1|-1 — элероны,
+     ?view=rear|close|tail — ракурс. -->
 <div id="status" hidden></div><div id="hud"></div>
 <script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
 <script type="module">
@@ -9,32 +12,44 @@ import * as THREE from 'three';
 import { scene, camera, renderer, updateGround, updateSun } from '../src/scene.js';
 import { Plane } from '../src/plane.js';
 
-const OUT = new URLSearchParams(location.search).get('flaps') === 'out';
+const params = new URLSearchParams(location.search);
+const pitch = parseFloat(params.get('pitch') ?? '0');
+const roll = parseFloat(params.get('roll') ?? '0');
+const view = params.get('view');
+
 const plane = new Plane();
 scene.add(plane.group);
 
 plane.load('../assets/stylized_ww1_plane.glb').then(() => {
-  plane.flapsOut = OUT;
-  for (let i = 0; i < 180; i++) plane.update(1 / 60);   // 3 с — панели дошли до упора
+  // Поверхности отклоняем, а самолёт держим на земле: так виден только
+  // их ход, без наложенного крена и тангажа всей машины.
+  plane.pitchInput = pitch;
+  plane.rollInput = roll;
+  for (let i = 0; i < 120; i++) {
+    plane.update(1 / 60);
+    plane.group.position.y = 0;   // отменяем набор высоты
+  }
   const p = plane.group.position;
-  const view = new URLSearchParams(location.search).get('view');
-  if (view === 'rear') {
-    // Из-за хвоста чуть выше крыла: отклонение панелей видно в профиль.
+
+  if (view === 'tail') {
+    camera.position.set(p.x + 2.6, p.y + 2.2, p.z - 6.4);
+    camera.lookAt(p.x, p.y + 1.1, p.z - 3.0);
+  } else if (view === 'rear') {
     camera.position.set(p.x + 1.2, p.y + 2.9, p.z - 6.5);
     camera.lookAt(p.x + 1.2, p.y + 2.1, p.z);
   } else if (view === 'close') {
-    // Крупный план правого верхнего закрылка: видно стык панели с крылом.
     camera.position.set(p.x + 3.6, p.y + 3.0, p.z - 2.6);
     camera.lookAt(p.x + 2.7, p.y + 2.15, p.z - 0.45);
   } else {
-    camera.position.set(p.x - 4.5, p.y + 3.4, p.z - 5.2); // сзади-слева, крупно
+    camera.position.set(p.x - 4.5, p.y + 3.4, p.z - 5.2);
     camera.lookAt(p.x, p.y + 1.4, p.z);
   }
+
   updateGround();
   updateSun(p);
   const draw = () => { requestAnimationFrame(draw); renderer.render(scene, camera); };
   draw();
-  console.log(`VIS готово, flapsOut=${OUT}, верх=${THREE.MathUtils.radToDeg(plane.flapAngleUpper).toFixed(0)}° низ=${THREE.MathUtils.radToDeg(plane.flapAngleLower).toFixed(0)}°`);
+  console.log(`VIS pitch=${pitch} roll=${roll} руль=${THREE.MathUtils.radToDeg(plane.elevatorAngle).toFixed(0)}°`);
 }).catch(e => console.log('VIS ОШИБКА ' + (e?.message ?? e)));
 </script>
 </body></html>

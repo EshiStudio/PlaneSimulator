@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><title>dump</title></head><body>
+<!-- Печатает габариты мешей модели в её собственных координатах.
+     ?rear=-0.25 — только хвостовая часть (по умолчанию весь самолёт). -->
+<script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from '../lib/GLTFLoader.js';
+
+const rear = parseFloat(new URLSearchParams(location.search).get('rear') ?? '99');
+new GLTFLoader().load('../assets/stylized_ww1_plane.glb', gltf => {
+  const model = gltf.scene;
+  model.updateMatrixWorld(true);
+  const rows = [];
+  model.traverse(n => {
+    if (!n.isMesh) return;
+    const box = new THREE.Box3().setFromObject(n);
+    const c = box.getCenter(new THREE.Vector3());
+    const s = box.getSize(new THREE.Vector3());
+    if (c.z > rear) return;
+    const mats = (Array.isArray(n.material) ? n.material : [n.material]).map(m => m?.name).join('+');
+    rows.push({ z: c.z, line: `${n.name} | ${mats} | c=(${c.x.toFixed(3)}, ${c.y.toFixed(3)}, ${c.z.toFixed(3)}) | size=(${s.x.toFixed(3)}, ${s.y.toFixed(3)}, ${s.z.toFixed(3)})` });
+  });
+  rows.sort((a, b) => a.z - b.z);
+  console.log('DUMP count=' + rows.length);
+  rows.forEach(r => console.log('DUMP ' + r.line));
+}, undefined, e => console.log('DUMP ERR ' + e));
+</script>
+</body></html>

@@ -23,27 +23,29 @@ const hud = document.getElementById('hud');
 const clock = new THREE.Clock();
 const deg = radians => Math.round(THREE.MathUtils.radToDeg(radians));
 
-function flapsText() {
-  if (!plane.flapsOut && plane.flapAngleUpper === 0 && plane.flapAngleLower === 0) return 'убраны';
-  return `выпущены ${deg(plane.flapAngleUpper)}°/${deg(plane.flapAngleLower)}° (верх/низ)`;
+/** Знак отклонения поверхности: вверх / вниз / нейтраль. */
+function surfaceText(angle) {
+  const value = deg(angle);
+  if (value === 0) return 'нейтраль';
+  return `${value > 0 ? 'вверх' : 'вниз'} ${Math.abs(value)}°`;
 }
 
 function updateHud() {
   const p = plane.group.position;
   hud.textContent =
     `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}   ` +
-    `закрылки: ${flapsText()}   ` +
-    `самолёт: клетка (${plane.cell.x}, ${plane.cell.z})   ` +
-    `мир (${p.x.toFixed(1)}, ${p.z.toFixed(1)}, ${p.y.toFixed(1)})` +
-    '\nЛКМ+мышь — вращение | колесо — зум | Q/E — высота | стрелки — самолёт | ' +
-    'Пробел — двигатель | F — закрылки | R — сброс камеры';
+    `руль высоты: ${surfaceText(plane.elevatorAngle)}   ` +
+    `элероны: правый ${surfaceText(plane.aileronAngle)}   ` +
+    `клетка (${plane.cell.x}, ${plane.cell.z})   мир (${p.x.toFixed(1)}, ${p.z.toFixed(1)})` +
+    '\nW/S — руль высоты | A/D — элероны | стрелки — самолёт по клеткам | ' +
+    'Пробел — двигатель | ЛКМ+мышь — камера | колесо — зум | Q/E — камера выше/ниже | R — сброс';
 }
 
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), MAX_FRAME_DT);
 
-  updateHeldKeys(dt);
+  updateHeldKeys(dt, plane);
   updateChaseCamera(plane.group.position, plane.yaw);
   plane.update(dt);
   updateGround();
