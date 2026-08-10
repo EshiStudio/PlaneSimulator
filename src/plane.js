@@ -7,6 +7,11 @@ const TARGET_SPAN = 6.0;              // размах, к которому по�
 const GROUND_CONTACT_DEPTH = 0.01;    // насколько шасси утоплено в пол, м
 const STANCE_ROLL = THREE.MathUtils.degToRad(3);    // компенсация крена вправо
 const STANCE_PITCH = THREE.MathUtils.degToRad(-8);  // парковочный тангаж
+// Коллизия корпуса для пешехода: сетка занятости строится автоматически по
+// мешам модели (см. #buildCollisionGrid), поэтому повторяет форму самолёта,
+// а не прямоугольник. Ячейка и запас вокруг корпуса — в метрах.
+const COLLISION_CELL = 0.2;
+const COLLISION_MARGIN = 0.5;
 
 const PROP_MAX_SPEED = 40;            // рад/с (~6.4 об/с)
 const PROP_ACCEL = 18;                // рад/с^2 — плавная раскрутка и торможение
@@ -424,6 +429,7 @@ export class Plane {
     this.#buildAilerons(model);
     this.#buildElevator(model);
     this.#buildGun(model);
+    this.#buildCollisionGrid();
   }
 
   /**
@@ -530,6 +536,124 @@ export class Plane {
   }
 
   /**
+   * Сетка занятости корпуса для пешей коллизии: растеризует проекцию мешей
+   * на землю (XZ) в ячейки COLLISION_CELL. Строится по геометрии модели,
+   * поэтому повторяет форму самолёта, а не прямоугольник.
+   */
+  #buildCollisionGrid() {
+    this.group.updateMatrixWorld(true);
+    const toLocal = new THREE.Matrix4().copy(this.group.matrixWorld).invert();
+    const v = new THREE.Vector3();
+    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+
+    const triangles = [];
+    const collect = (mesh, a, b, c) => {
+      const ta = v.copy(a).applyMatrix4(mesh.matrixWorld).applyMatrix4(toLocal);
+      const tb = v.copy(b).applyMatrix4(mesh.matrixWorld).applyMatrix4(toLocal);
+      const tc = v.copy(c).applyMatrix4(mesh.matrixWorld).applyMatrix4(toLocal);
+      triangles.push(ta.x, ta.z, tb.x, tb.z, tc.x, tc.z);
+      for (const p of [ta, tb, tc]) {
+        if (p.x < min.x) min.x = p.x;
+        if (p.x > max.x) max.x = p.x;
+        if (p.z < min.z) min.z = p.z;
+        if (p.z > max.z) max.z = p.z;
+      }
+    };
+
+    for (const mesh of this.solidMeshes) {
+      const pos = mesh.geometry.attributes.position;
+      const index = mesh.geometry.index;
+      if (index) {
+        for (let i = 0; i < index.count; i += 3) {
+          const ia = index.getX(i), ib = index.getX(i + 1), ic = index.getX(i + 2);
+          const pa = new THREE.Vector3().fromBufferAttribute(pos, ia);
+          const pb = new THREE.Vector3().fromBufferAttribute(pos, ib);
+          const pc = new THREE.Vector3().fromBufferAttribute(pos, ic);
+          collect(mesh, pa, pb, pc);
+        }
+      } else {
+        for (let i = 0; i < pos.count; i += 3) {
+          const pa = new THREE.Vector3().fromBufferAttribute(pos, i);
+          const pb = new THREE.Vector3().fromBufferAttribute(pos, i + 1);
+          const pc = new THREE.Vector3().fromBufferAttribute(pos, i + 2);
+          collect(mesh, pa, pb, pc);
+        }
+      }
+    }
+
+    const cell = COLLISION_CELL;
+    const margin = COLLISION_MARGIN;
+    const minX = min.x - margin, minZ = min.z - margin;
+    const cols = Math.max(1, Math.ceil((max.x - min.x + margin * 2) / cell));
+    const rows = Math.max(1, Math.ceil((max.z - min.z + margin * 2) / cell));
+    const grid = new Uint8Array(cols * rows);
+
+    const inTri = (px, pz, ax, az, bx, bz, cx, cz) => {
+      const d1 = (px - bx) * (az - bz) - (ax - bx) * (pz - bz);
+      const d2 = (px - cx) * (bz - cz) - (bx - cx) * (pz - cz);
+      const d3 = (px - ax) * (cz - az) - (cx - ax) * (pz - az);
+      const neg = d1 < 0 || d2 < 0 || d3 < 0;
+      const pos = d1 > 0 || d2 > 0 || d3 > 0;
+      return !(neg && pos);
+    };
+
+    for (let t = 0; t < triangles.length; t += 6) {
+      const ax = triangles[t], az = triangles[t + 1];
+      const bx = triangles[t + 2], bz = triangles[t + 3];
+      const cx = triangles[t + 4], cz = triangles[t + 5];
+      const tminX = Math.min(ax, bx, cx), tmaxX = Math.max(ax, bx, cx);
+      const tminZ = Math.min(az, bz, cz), tmaxZ = Math.max(az, bz, cz);
+      const j0 = Math.max(0, Math.floor((tminZ - minZ) / cell));
+      const j1 = Math.min(rows - 1, Math.floor((tmaxZ - minZ) / cell));
+      const i0 = Math.max(0, Math.floor((tminX - minX) / cell));
+      const i1 = Math.min(cols - 1, Math.floor((tmaxX - minX) / cell));
+      for (let j = j0; j <= j1; j++) {
+        const pz = minZ + (j + 0.5) * cell;
+        for (let i = i0; i <= i1; i++) {
+          const px = minX + (i + 0.5) * cell;
+          if (grid[j * cols + i]) continue;
+          if (inTri(px, pz, ax, az, bx, bz, cx, cz)) grid[j * cols + i] = 1;
+        }
+      }
+    }
+
+    this._collision = { minX, minZ, cell, cols, rows, grid };
+  }
+
+  /**
+   * Проверка пешей коллизии: занята ли хотя бы одна ячейка сетки в радиусе
+   * вокруг мировой точки. Пока сетки нет (модель не загружена) — свободно.
+   */
+  isBlocked(x, z, radius) {
+    const c = this._collision;
+    if (c) {
+      const v = this._collisionTmp ?? (this._collisionTmp = new THREE.Vector3());
+      v.set(x, 0, z);
+      this.group.worldToLocal(v);
+      const j0 = Math.max(0, Math.floor((v.z - radius - c.minZ) / c.cell));
+      const j1 = Math.min(c.rows - 1, Math.floor((v.z + radius - c.minZ) / c.cell));
+      const i0 = Math.max(0, Math.floor((v.x - radius - c.minX) / c.cell));
+      const i1 = Math.min(c.cols - 1, Math.floor((v.x + radius - c.minX) / c.cell));
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          if (c.grid[j * c.cols + i]) return true;
+        }
+      }
+    }
+    // Работающий винт заметает круг: через вращающиеся лопасти не пройти.
+    if (this.engineOn && this.propZone) {
+      const p = this._propTmp ?? (this._propTmp = new THREE.Vector3());
+      p.set(x, 0, z);
+      this.group.worldToLocal(p);
+      const dx = p.x - this.propZone.x;
+      const dz = p.z - this.propZone.z;
+      if (dx * dx + dz * dz <= this.propZone.r * this.propZone.r) return true;
+    }
+    return false;
+  }
+
+  /**
    * Отдача ствола: мгновенный откат назад (в +Z локально, в сторону хвоста
    * стрелка), затем плавный возврат за MUZZLE_RECOVER_TIME.
    */
@@ -608,6 +732,25 @@ export class Plane {
     });
     blades.forEach(mesh => pivot.attach(mesh));
     this.propPivot = pivot;
+
+    // Зона вращающегося винта: центр оси в локальных координатах группы и
+    // радиус лопастей. При работающем двигателе она блокирует проход (см.
+    // isBlocked), чтобы нельзя было пройти сквозь вращающийся винт.
+    this.group.updateMatrixWorld(true);
+    const axisPos = new THREE.Vector3();
+    pivot.getWorldPosition(axisPos);
+    this.group.worldToLocal(axisPos);
+    let radius = 0;
+    const v = new THREE.Vector3();
+    for (const mesh of blades) {
+      const pos = mesh.geometry.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+        this.group.worldToLocal(v);
+        radius = Math.max(radius, Math.hypot(v.x - axisPos.x, v.z - axisPos.z));
+      }
+    }
+    this.propZone = { x: axisPos.x, z: axisPos.z, r: radius + 0.1 };
   }
 
   /**

@@ -22,10 +22,9 @@ const FIRE_SPREAD = 0.012;    // рад — конус разброса трас
 // попадают туда, куда смотрит прицел, несмотря на смещение дула от глаз.
 const SIGHT_DISTANCE = 40;    // м
 
-// Габариты самолёта для пешей коллизии + радиус персонажа: через них не
-// пройти. Высота не участвует: перепрыгнуть самолёт нельзя всё равно.
-const PLANE_HALF_W = 3.3;     // полуразмах с запасом
-const PLANE_HALF_L = 3.9;     // полдлина с носом и хвостом
+// Радиус персонажа для пешей коллизии с корпусом: форма самолёта берётся из
+// сетки занятости (см. plane.js #buildCollisionGrid), а не из прямоугольника.
+const PLAYER_RADIUS = 0.35;   // м
 // Где персонаж стоит в начале — у левого крыла, лицом к самолёту.
 const START_OFFSET = { x: -4.6, z: 1.4 };
 
@@ -126,10 +125,9 @@ function walk(dt, input) {
   player.update(dt, input, onFloor, view.yaw);
 
   // Коллизия с самолётом: скольжение по осям порознь, чтобы не застревать
-  // на стыке клетки с бортом и всё же огибать крыло.
-  const px = plane.group.position.x;
-  const pz = plane.group.position.z;
-  const blocked = (x, z) => Math.abs(x - px) < PLANE_HALF_W && Math.abs(z - pz) < PLANE_HALF_L;
+  // на стыке клетки с бортом и всё же огибать крыло. Форма корпуса — из
+  // сетки занятости мешей, а не прямоугольник вокруг центра.
+  const blocked = (x, z) => plane.isBlocked(x, z, PLAYER_RADIUS);
   const p = character.group.position;
   const nx = p.x + player.velocity.x * dt;
   const nz = p.z + player.velocity.z * dt;
@@ -173,7 +171,7 @@ function updateHud() {
       `пешком   позиция (${c.x.toFixed(1)}, ${c.z.toFixed(1)})   ` +
       `до самолёта ${c.distanceTo(p).toFixed(1)} м   ` +
       `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}\n` +
-      `W/S/A/D — идти | мышь — осмотреться | Пробел — прыжок | Ctrl — скольжение | ` +
+      `W/S/A/D — идти | мышь — осмотреться | Пробел — прыжок | Shift — скольжение | ` +
       `${near ? 'E — сесть в самолёт' : 'подойдите к самолёту и нажмите E'}`;
   }
 }

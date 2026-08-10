@@ -143,9 +143,9 @@ export function jumpHeld() {
   return heldKeys.has('Space');
 }
 
-/** Ctrl зажат — скольжение. */
+/** Shift зажат — скольжение. */
 export function slideHeld() {
-  return heldKeys.has('ControlLeft') || heldKeys.has('ControlRight');
+  return heldKeys.has('ShiftLeft') || heldKeys.has('ShiftRight');
 }
 
 /** Те же клавиши в кабине управляют поверхностями. */
