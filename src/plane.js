@@ -46,6 +46,12 @@ const GUN_MESH_RE = /^polySurface(195|199|231|232|233|234|235|236|237|238|239|24
 // Стволы тонкие, около 0.02 в поперечнике, поэтому запас минимальный: при
 // 0.006 контур просто съедал их целиком.
 const GUN_OUTLINE_INFLATE = 0.005;
+// Кольцо турели и его детали: не вращаются, но их раздутый контур торчит
+// чёрными клиньями, как только стволы отводятся. Ему делаем свой, тонкий.
+const GUN_RING_RE = /^polySurface(227|228|229|230)_/;
+const GUN_RING_OUTLINE_INFLATE = 0.004;
+// Запас вокруг стволов, в котором общая оболочка удаляется целиком.
+const GUN_CLEAR_RADIUS = 0.09;
 const GUN_YAW_LIMIT = THREE.MathUtils.degToRad(120);
 const GUN_PITCH_MIN = THREE.MathUtils.degToRad(-25);
 const GUN_PITCH_MAX = THREE.MathUtils.degToRad(70);
@@ -430,16 +436,25 @@ export class Plane {
     // Кусок общей оболочки над пулемётом вырезаем и выбрасываем, а контур
     // строим заново по геометрии самих стволов: только так он совпадает с
     // ними полностью и целиком уезжает вместе с турелью.
+    const ring = [];
+    model.traverse(node => {
+      if (node.isMesh && GUN_RING_RE.test(node.name)) ring.push(node);
+    });
+
     const parts = [...meshes];
     const hull = model.getObjectByName(HULL_OUTLINE_NAME);
     if (hull) {
-      const stale = extractOutlineFor(hull, model, meshes, this.solidMeshes);
-      if (stale !== null) {
-        stale.removeFromParent();
-        stale.geometry.dispose();
-      }
       const color = hull.material?.color ?? new THREE.Color(0x000000);
+
+      // Всю общую оболочку в объёме, который обметают стволы, удаляем: она
+      // раздута почти на полметра, принадлежит вперемешку кольцу, гаргроту и
+      // пулемёту, и при наводке торчит наружу чёрными клиньями.
+      const region = localBox(meshes, model).expandByScalar(GUN_CLEAR_RADIUS);
+      deleteOutlineInside(hull, model, region);
+
+      // Взамен — свои контуры: подвижный у стволов, неподвижный у кольца.
       parts.push(...buildOutlineMeshes(meshes, color, GUN_OUTLINE_INFLATE));
+      buildOutlineMeshes(ring, color, GUN_RING_OUTLINE_INFLATE);
     }
 
     const center = unionBox(meshes).getCenter(new THREE.Vector3());
