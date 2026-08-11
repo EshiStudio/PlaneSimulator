@@ -14,6 +14,8 @@ const heldKeys = new Set();
 
 export function bindInput(domElement, actions) {
   addEventListener('keydown', event => {
+    // Ввод в поле кода комнаты не должен крутить игрока.
+    if (event.target instanceof HTMLInputElement) return;
     // Автоповтор клавиши шлёт ~30 keydown в секунду: без этой проверки
     // удержание Пробела переключало бы двигатель десятки раз в секунду.
     if (event.repeat) return;
@@ -43,7 +45,10 @@ export function bindInput(domElement, actions) {
     heldKeys.add(event.code);
   });
 
-  addEventListener('keyup', event => heldKeys.delete(event.code));
+  addEventListener('keyup', event => {
+    if (event.target instanceof HTMLInputElement) return;
+    heldKeys.delete(event.code);
+  });
   // Уход фокуса (Alt+Tab с зажатой W) иначе оставлял клавишу «залипшей».
   addEventListener('blur', () => heldKeys.clear());
 

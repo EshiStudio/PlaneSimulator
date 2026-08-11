@@ -32,12 +32,40 @@
     position: absolute; left: -2px; top: -2px; width: 4px; height: 4px;
     border-radius: 50%; background: #fff; box-shadow: 0 0 2px rgba(0,0,0,0.8);
   }
+  #netpanel {
+    position: absolute; top: 10px; right: 10px; width: 240px;
+    background: rgba(0,0,0,0.55); padding: 10px 14px; border-radius: 8px;
+    color: #fff; font-size: 14px; text-shadow: 0 1px 2px #000; user-select: none;
+  }
+  #netpanel .net-title {
+    font-size: 11px; opacity: 0.7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;
+  }
+  #netpanel button {
+    background: #4a7; border: 0; color: #fff; padding: 5px 10px; border-radius: 5px;
+    cursor: pointer; font-size: 13px;
+  }
+  #netpanel button:hover { filter: brightness(1.15); }
+  #netpanel .net-row { display: flex; gap: 6px; margin-top: 8px; }
+  #netpanel .net-join { display: flex; gap: 6px; margin-top: 8px; }
+  #netpanel input {
+    flex: 1; min-width: 0; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+    color: #fff; padding: 4px 8px; border-radius: 5px; font-size: 13px; outline: none; text-transform: uppercase;
+  }
+  #netpanel input::placeholder { color: rgba(255,255,255,0.5); }
+  #netpanel .net-room { margin: 3px 0; }
+  #netpanel .net-status { margin-top: 7px; font-size: 12px; min-height: 1em; opacity: 0.9; }
+  #netpanel .net-status.err { color: #f88; }
 </style>
 </head>
 <body>
 <div id="status">Загрузка модели самолёта…</div>
 <div id="hud"></div>
 <div id="crosshair"><span></span></div>
+<div id="netpanel">
+  <div class="net-title">Мультиплеер</div>
+  <div id="net-body"></div>
+  <div id="net-status"></div>
+</div>
 
 <script src="./lib/peerjs.min.js"></script>
 <script type="importmap">

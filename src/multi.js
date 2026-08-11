@@ -72,6 +72,17 @@ export function createMulti(handlers = {}) {
         if (data.t === 'push') on('push', data.dx, data.dz);
         else if (data.t === 'engine') on('engine');
         else if (data.t === 'seat') on('seat', !!data.s);
+        else if (data.t === 'player') {
+          on('player', c.peer, data);
+          // Ретрансляция другим гостям: все видят всех через хост.
+          if (data.from === undefined) {
+            const relay = { ...data, from: c.peer };
+            for (const [pid, oc] of conns) {
+              if (pid === c.peer) continue;
+              try { oc.send(relay); } catch { /* соединение умерло */ }
+            }
+          }
+        }
       });
       c.on('close', () => {
         conns.delete(c.peer);
@@ -100,11 +111,17 @@ export function createMulti(handlers = {}) {
         on('status', `подключено к комнате ${code}`);
       });
       c.on('data', data => {
-        if (data?.t === 'plane') remote = data;
+        if (!data || typeof data.t !== 'string') return;
+        if (data.t === 'plane') remote = data;
+        else if (data.t === 'player') on('player', data.from ?? 'host', data);
       });
       c.on('close', () => {
         net.connected = false;
         on('status', 'соединение с хостом потеряно');
+      });
+      c.on('error', err => {
+        if (err?.type === 'peer-unavailable') on('status', `комната ${code} не найдена`);
+        else on('error', err);
       });
     });
     p.on('error', err => {
@@ -113,7 +130,17 @@ export function createMulti(handlers = {}) {
     });
   };
 
-  net.close = () => { try { peer?.destroy(); } catch { /* уже закрыт */ } };
+  net.close = () => {
+    try { peer?.destroy(); } catch { /* уже закрыт */ }
+    peer = null;
+    conn = null;
+    conns.clear();
+    remote = null;
+    net.role = null;
+    net.code = null;
+    net.connected = false;
+    net.guests = 0;
+  };
 
   // ---------- отправка состояния (хост) ----------
   net.tickPlane = (plane, now) => {
@@ -135,6 +162,17 @@ export function createMulti(handlers = {}) {
   net.sendPush = (dx, dz) => { try { conn?.send({ t: 'push', dx, dz }); } catch { } };
   net.sendEngine = () => { try { conn?.send({ t: 'engine' }); } catch { } };
   net.sendSeat = seated => { try { conn?.send({ t: 'seat', s: seated ? 1 : 0 }); } catch { } };
+
+  // ---------- состояние игрока (обе стороны, ≈12 Гц) ----------
+  let lastPlayer = 0;
+  net.tickPlayer = (now, snap) => {
+    if (net.role !== 'host' && net.role !== 'guest') return;
+    if (!net.connected) return;
+    if (now - lastPlayer < SEND_INTERVAL) return;
+    lastPlayer = now;
+    if (net.role === 'guest') { try { conn?.send(snap); } catch { } }
+    else broadcast(snap);
+  };
 
   // ---------- применение ремоут-состояния (гость) ----------
   let remote = null;   // последний снапшот от хоста

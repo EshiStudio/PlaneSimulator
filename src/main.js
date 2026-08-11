@@ -95,11 +95,129 @@ function toggleSeat() {
   net.sendSeat(true);
 }
 
-// P2P-мультиплеер: хост рулит самолётом, гости подключаются по ссылке ?join=КОД.
+// P2P-мультиплеер: хост рулит самолётом, гости подключаются по коду комнаты.
+const netPanel = document.getElementById('netpanel');
+const netStatusEl = document.getElementById('net-status');
+const showNetStatus = (msg, isError = false) => {
+  netStatusEl.textContent = msg ?? '';
+  netStatusEl.classList.toggle('err', !!isError);
+};
+const netLink = () => `${location.origin}${location.pathname}?join=${net.code}`;
+function renderNetPanel() {
+  const body = document.getElementById('net-body');
+  if (net.role === 'host') {
+    body.innerHTML =
+      `<div class="net-room">Комната: <b>${net.code}</b></div>` +
+      `<div class="net-room">Игроков: ${net.guests + 1}</div>` +
+      `<div class="net-row"><button id="net-copy">Скопировать ссылку</button><button id="net-leave">Выйти</button></div>`;
+    body.querySelector('#net-copy').onclick = () => {
+      const done = () => showNetStatus('ссылка скопирована');
+      const fail = () => showNetStatus('не получилось: ' + netLink(), true);
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(netLink()).then(done, fail);
+      else fail();
+    };
+    body.querySelector('#net-leave').onclick = leaveNet;
+  } else if (net.role === 'guest') {
+    body.innerHTML =
+      `<div class="net-room">Подключено к <b>${net.code}</b></div>` +
+      `<div class="net-row"><button id="net-leave">Выйти</button></div>`;
+    body.querySelector('#net-leave').onclick = leaveNet;
+  } else {
+    body.innerHTML =
+      `<button id="net-host">Создать комнату</button>` +
+      `<div class="net-join"><input id="net-code" placeholder="код комнаты" maxlength="9" autocomplete="off"><button id="net-join">Войти</button></div>`;
+    body.querySelector('#net-host').onclick = () => net.host();
+    body.querySelector('#net-join').onclick = () => {
+      let code = (document.getElementById('net-code').value || '').trim().toUpperCase();
+      if (!code) { showNetStatus('введите код комнаты', true); return; }
+      // Хост регистрирует id строчным префиксом — нормализуем любой ввод.
+      code = 'psim-' + code.replace(/^PSIM-/, '');
+      net.join(code);
+    };
+  }
+}
+function leaveNet() {
+  net.close();
+  renderNetPanel();
+  showNetStatus('');
+}
+
+// Фигуры других игроков (как в оригинале SHOOTER): тот же Character, но со
+// своей головой, анимируется снапшотами владельца — шаг, прыжок, поворот
+// головы, сидение в кабине.
+const remoteChars = new Map();   // key ('host' у гостя / peerId у хоста) -> { char, target }
+const remoteWorld = new THREE.Vector3();
+
+function createRemoteCharacter() {
+  const c = new Character();
+  c.setHeight(CHARACTER_HEIGHT);
+  c.hideHeadForOwner(false);   // чужие видны целиком, со своей головой
+  scene.add(c.group);
+  c.group.visible = false;     // до первого снапшота
+  return c;
+}
+
+function updateRemoteChar(rc, dt) {
+  const t = rc.target;
+  const g = rc.char.group;
+  if (!t) { g.visible = false; return; }
+  g.visible = true;
+  if (t.seated) {
+    // Владелец сидит в кабине: фигура привязана к самолёту, корпус крутится
+    // за наводкой стрелка.
+    if (g.parent !== plane.group) plane.group.add(g);
+    g.position.set(SEAT_OFFSET.x, SEAT_OFFSET.y, SEAT_OFFSET.z);
+    g.rotation.set(0, t.yaw - plane.yaw, 0);
+  } else {
+    if (g.parent !== scene) scene.add(g);
+    const k = 1 - Math.exp(-10 * dt);
+    g.position.x += (t.p[0] - g.position.x) * k;
+    g.position.y += (t.p[1] - g.position.y) * k;
+    g.position.z += (t.p[2] - g.position.z) * k;
+    let d = t.yaw - g.rotation.y;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    g.rotation.y += d * k;
+  }
+  rc.char.externalVelocity.set(0, t.vy, 0);
+  rc.char.externalMoveSpeed = t.hspeed;
+  rc.char.externalOnFloor = !!t.onFloor;
+  rc.char.externalPitch = t.pitch ?? 0;
+  rc.char.stanceAmount = 0;
+  rc.char.sunDirection.copy(SUN_DIRECTION);
+  rc.char.update(dt, null);
+}
+
+/** Снапшот своего персонажа для других игроков (≈12 Гц). */
+function playerSnap() {
+  character.group.getWorldPosition(remoteWorld);
+  return {
+    t: 'player',
+    p: [remoteWorld.x, remoteWorld.y, remoteWorld.z],
+    yaw: view.yaw,
+    pitch: view.pitch,
+    vy: player.velocity.y,
+    hspeed: player.horizontalSpeed,
+    onFloor: onFloor ? 1 : 0,
+    seated: seated ? 1 : 0,
+  };
+}
+
 const net = createMulti({
   push: (dx, dz) => plane.move(dx, dz),   // гость толкает самолёт
   engine: () => { plane.engineOn = !plane.engineOn; },
   seat: () => { net.seatEvents++; },      // гость сел/встал
+  status: msg => { renderNetPanel(); showNetStatus(msg); },
+  error: err => { console.error(err); showNetStatus('ошибка: ' + (err?.type ?? err), true); },
+  guests: () => renderNetPanel(),
+  player: (key, snap) => {
+    let rc = remoteChars.get(key);
+    if (!rc) {
+      rc = { char: createRemoteCharacter(), target: null };
+      remoteChars.set(key, rc);
+    }
+    rc.target = snap;
+  },
 });
 net.seatEvents = 0;
 {
@@ -107,6 +225,8 @@ net.seatEvents = 0;
   if (params.has('host')) net.host();
   else if (params.get('join')) net.join(params.get('join'));
 }
+renderNetPanel();
+window.__net = net;   // отладка/тесты CDP
 
 bindInput(renderer.domElement, {
   isSeated: () => seated,
@@ -276,13 +396,6 @@ function updateHud() {
       `W/S/A/D — идти | мышь — осмотреться | Пробел — прыжок | Shift — скольжение | ` +
       `${near ? 'E — сесть в самолёт' : 'подойдите к самолёту и нажмите E'}`;
   }
-  if (net.role === 'host') {
-    hud.textContent +=
-      `\n[P2P] комната: ${net.code} · игроков: ${net.guests + 1}\n` +
-      `друг подключается по ссылке: …${location.pathname}?join=${net.code}`;
-  } else if (net.role === 'guest') {
-    hud.textContent += `\n[P2P] ${net.connected ? 'подключено к хосту' : 'нет соединения'}`;
-  }
 }
 
 function animate() {
@@ -332,8 +445,15 @@ function animate() {
   plane.update(dt);
   // Гость не симулирует самолёт — применяет состояние хоста с интерполяцией.
   // Хост, наоборот, рассылает своё состояние гостям (≈12 Гц).
-  if (net.role === 'guest') net.applyRemote(dt, plane, seated);
-  else if (net.role === 'host') net.tickPlane(plane, performance.now());
+  const now = performance.now();
+  if (net.role === 'guest') {
+    net.applyRemote(dt, plane, seated);
+    net.tickPlayer(now, playerSnap());
+  } else if (net.role === 'host') {
+    net.tickPlane(plane, now);
+    net.tickPlayer(now, playerSnap());
+  }
+  for (const rc of remoteChars.values()) updateRemoteChar(rc, dt);
   // Входы анимации персонажа — зеркало `_sync_local_player_avatar()` из
   // оригинального world.gd. Сидя в кабине физика пешехода не обновляется,
   // поэтому скорость и пол явно обнуляем, чтобы персонаж стоял в покое.
@@ -372,6 +492,12 @@ function animate() {
         seatEvents: net.seatEvents,
         remote: net.role === 'guest' ? net.remote() : null,
       };
+      __dbg.remotePlayers = [...remoteChars.entries()].map(([key, rc]) => ({
+        key,
+        pos: rc.char.group.position.toArray(),
+        seated: rc.target?.seated ? 1 : 0,
+        visible: rc.char.group.visible,
+      }));
     } catch (e) {
       __dbg.err = String(e && e.stack || e);
     }

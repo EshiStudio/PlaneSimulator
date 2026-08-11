@@ -1,6 +1,6 @@
 // P2P-тест: два headless Chrome (хост + гость) соединяются через PeerJS Cloud.
-// 1. Хост открывает ?host=1, получает код комнаты.
-// 2. Гость открывает ?join=КОД, соединение устанавливается.
+// 1. Хост нажимает «Создать комнату» в панели — получает код комнаты.
+// 2. Гость вводит код в поле и нажимает «Войти» — соединение устанавливается.
 // 3. Хост толкает самолёт стрелкой — гость видит его движение.
 // 4. Гость толкает самолёт — хост применяет и рассылает обратно.
 // 5. Гость садится (E) и заводит двигатель (Пробел) — хост переключает.
@@ -77,18 +77,29 @@ const key = (client, type, k, code) => client.send('Input.dispatchKeyEvent', {
   nativeVirtualKeyCode: 0,
 });
 
+const click = (client, selector) => evalJson(client, `(() => { const b = document.querySelector('${selector}'); if (!b) return null; b.click(); return 'ok'; })()`);
+const setInput = (client, selector, value) => evalJson(client, `(() => { const i = document.querySelector('${selector}'); if (!i) return null; i.value = '${value}'; return 'ok'; })()`);
+
 const profileA = mkdtempSync(join(tmpdir(), 'oc-net-a-'));
 const profileB = mkdtempSync(join(tmpdir(), 'oc-net-b-'));
 let host, guest, fails = 0;
 
 try {
-  host = await launch(profileA, `http://127.0.0.1:${PORT}/?host=1`, DBG_PORT_A);
+  host = await launch(profileA, `http://127.0.0.1:${PORT}/`, DBG_PORT_A);
+  await waitFor(host, `window.__dbg?.net?.role === null ? 'ok' : null`, 60000, 'solo mode');
+  await click(host, '#net-host');
   const code = await waitFor(host, `(() => { const n = window.__dbg?.net; return n && n.role === 'host' && n.code ? n.code : null; })()`, 60000, 'host room');
   console.log('host room:', code);
 
-  guest = await launch(profileB, `http://127.0.0.1:${PORT}/?join=${code}`, DBG_PORT_B);
+  guest = await launch(profileB, `http://127.0.0.1:${PORT}/`, DBG_PORT_B);
+  await waitFor(guest, `window.__dbg?.net?.role === null ? 'ok' : null`, 60000, 'guest solo mode');
+  await setInput(guest, '#net-code', code);
+  await click(guest, '#net-join');
   await waitFor(guest, `(() => { const n = window.__dbg?.net; return n && n.role === 'guest' && n.connected ? 'ok' : null; })()`, 60000, 'guest connect');
-  console.log('guest connected');
+  console.log('guest connected via panel');
+  await waitFor(host, `(() => { const n = window.__dbg?.net; return n && n.guests === 1 ? 'ok' : null; })()`, 30000, 'host sees guest');
+  await waitFor(guest, `(() => { const n = window.__dbg?.net; return n && n.role === 'guest' && n.connected ? 'ok' : null; })()`, 60000, 'guest connect');
+  console.log('guest connected via panel');
   await waitFor(host, `(() => { const n = window.__dbg?.net; return n && n.guests === 1 ? 'ok' : null; })()`, 30000, 'host sees guest');
 
   // Хост толкает самолёт: ArrowUp = move(0, -1), позиция (5, -5).
@@ -105,10 +116,19 @@ try {
   await waitFor(host, `(() => { const p = window.__dbg?.planePos; return p && Math.abs(p[0] - 5) < 0.01 && Math.abs(p[2] - 5) < 0.01 ? 'ok' : null; })()`, 10000, 'host applied guest push');
   console.log('guest->host push OK');
 
+  // Репликация игроков: хост идёт вперёд (W) — гость видит его фигуру в движении.
+  const hostStartZ = (await evalJson(host, `window.__dbg?.pos?.[2]`)) ?? 6.4;
+  await key(host, 'keyDown', 'w', 'KeyW');
+  await sleep(800);
+  await key(host, 'keyUp', 'w', 'KeyW');
+  await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].visible && r[0].pos[2] < ${hostStartZ - 0.5} ? 'ok' : null; })()`, 15000, 'guest sees host walk');
+  console.log('host->guest player replication OK');
+
   // Гость садится (E) и заводит двигатель (Пробел) из кабины.
   await key(guest, 'keyDown', 'e', 'KeyE');
   await key(guest, 'keyUp', 'e', 'KeyE');
   await waitFor(guest, `window.__dbg?.seated === true ? 'ok' : null`, 10000, 'guest seated');
+  await waitFor(host, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].seated === 1 ? 'ok' : null; })()`, 10000, 'host sees guest seated');
   await waitFor(host, `window.__dbg?.net?.seatEvents === 1 ? 'ok' : null`, 10000, 'host seat event');
   await key(guest, 'keyDown', ' ', 'Space');
   await key(guest, 'keyUp', ' ', 'Space');

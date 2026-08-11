@@ -28,3 +28,12 @@ jobs:
         run: node tests/cdp_smoke.mjs
         env:
           CHROME_BIN: /usr/bin/google-chrome
+
+  test-net:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: P2P test (two browsers, PeerJS Cloud)
+        run: node tests/cdp_net_test.mjs
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
