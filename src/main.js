@@ -5,7 +5,7 @@ import { view, updateFirstPersonCamera, updateCameraLean } from './camera.js';
 import { Plane } from './plane.js';
 import { Character } from './character.js';
 import { PlayerPhysics, MAX_WALK_SPEED } from './player.js';
-import { renderFrame } from './postfx.js';
+import { renderFrame, setGlareOccluders } from './postfx.js';
 import { bindInput, walkInput, jumpHeld, slideHeld, clearFlightControls } from './input.js';
 import { Hands } from './hands.js';
 import { Fire } from './fire.js';
@@ -32,6 +32,8 @@ const START_OFFSET = { x: -4.6, z: 1.4 };
 
 const plane = new Plane();
 scene.add(plane.group);
+// Меши корпуса (solidMeshes) закрывают солнце, когда стоишь за самолётом.
+setGlareOccluders(plane);
 
 const character = new Character();
 character.setHeight(CHARACTER_HEIGHT);

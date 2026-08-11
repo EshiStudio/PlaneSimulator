@@ -2,7 +2,7 @@
 // накладывает панини-проекцию из Godot `SHOOTER/shaders/panini.gdshader`
 // (широкий FOV без «растяга» краёв) плюс хроматическую аберрацию и виньетку.
 import * as THREE from 'three';
-import { scene, camera, renderer } from './scene.js';
+import { scene, camera, renderer, SUN_DIRECTION } from './scene.js';
 
 export const FOV_DEGREES = 60.0;
 
@@ -110,16 +110,196 @@ export const postTarget = new THREE.WebGLRenderTarget(1, 1, {
 // MSAA при рендере в RenderTarget (в Godot это INTERNAL_RENDER_SCALE 1.5).
 postTarget.samples = 4;
 
+// --- Блик солнца: экранный оверлей из Godot sun_glare.gd. Рисуется поверх
+// панини-кадра аддитивно в экранном пространстве (как Control в оригинале):
+// проекция точки солнца обычной камерой, яркость зависит от совпадения
+// взгляда с солнцем, выхода за край экрана и заслона корпусом самолёта.
+const SUN_DISTANCE = 2000.0;
+const ALIGNMENT_START = 0.58;
+const SCREEN_EDGE_FADE = 1.35;
+
+const glareUniforms = {
+  uSize: { value: new THREE.Vector2(1, 1) },
+  uSun: { value: new THREE.Vector2(0, 0) },
+  uIntensity: { value: 0 },
+  uTime: { value: 0 },
+};
+
+const glareFragmentShader = `
+uniform vec2 uSize;
+uniform vec2 uSun;
+uniform float uIntensity;
+uniform float uTime;
+varying vec2 vUv;
+
+const vec3 CORE = vec3(1.0, 0.95, 0.72);
+const vec3 WARM = vec3(1.0, 0.70, 0.33);
+const vec3 RING = vec3(1.0, 0.82, 0.46);
+
+vec3 srgbEncode(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+// _draw_soft_circle: 12 вложенных кругов, альфа каждого 0.48*(1-(i/12)^2).
+float softCircle(vec2 g, vec2 p, float R, float alpha) {
+  float rn = length(g - p) / max(R, 1e-4);
+  float i = clamp(ceil(rn * 12.0), 1.0, 12.0);
+  float falloff = (i / 12.0) * (i / 12.0);
+  return alpha * 0.48 * (1.0 - falloff);
+}
+
+float disc(vec2 g, vec2 p, float R, float alpha) {
+  float rn = length(g - p) / max(R, 1e-4);
+  return alpha * (1.0 - smoothstep(0.9, 1.0, rn));
+}
+
+float hline(vec2 g, vec2 c, float len, float w, float alpha) {
+  float halfW = w * 0.5;
+  float band = smoothstep(halfW + 1.0, halfW, abs(g.y - c.y));
+  band *= smoothstep(len + 1.0, len, abs(g.x - c.x));
+  return alpha * band;
+}
+
+float vline(vec2 g, vec2 c, float len, float w, float alpha) {
+  float halfW = w * 0.5;
+  float band = smoothstep(halfW + 1.0, halfW, abs(g.x - c.x));
+  band *= smoothstep(len + 1.0, len, abs(g.y - c.y));
+  return alpha * band;
+}
+
+// _draw_ring: полилиния с волнистостью 1 + sin(3a)*0.025, ширина max(R*0.06, 1).
+float ring(vec2 g, vec2 c, float R, float w, float alpha) {
+  float d = length(g - c);
+  float a = atan(g.y - c.y, g.x - c.x);
+  float Reff = R * (1.0 + 0.025 * sin(a * 3.0));
+  return alpha * (1.0 - smoothstep(w * 0.5, w * 0.5 + 1.0, abs(d - Reff)));
+}
+
+void main() {
+  // Экранные пиксели с y вниз — как size/position у Godot Control.
+  vec2 g = vec2(vUv.x * uSize.x, (1.0 - vUv.y) * uSize.y);
+  if (uIntensity <= 0.003) {
+    gl_FragColor = vec4(0.0);
+    return;
+  }
+  float base = min(uSize.x, uSize.y);
+  float pulse = 0.96 + sin(uTime * 1.7) * 0.04;
+  float intensity = uIntensity * pulse;
+  vec2 p = uSun;
+
+  vec3 acc = vec3(0.0);
+  acc += CORE * softCircle(g, p, base * 0.24, 0.060 * intensity);
+  acc += WARM * softCircle(g, p, base * 0.11, 0.110 * intensity);
+  acc += vec3(1.0) * disc(g, p, base * 0.013, 0.75 * intensity);
+
+  float short_ = base * 0.18;
+  float long_ = base * 0.32;
+  float w = max(base * 0.0045, 1.0);
+  acc += CORE * hline(g, p, long_, w * 1.2, 0.10 * intensity);
+  acc += CORE * vline(g, p, long_, w, 0.08 * intensity);
+  acc += WARM * hline(g, vec2(p.x, p.y + short_ * 0.20), short_, w, 0.06 * intensity);
+  acc += WARM * hline(g, vec2(p.x, p.y - short_ * 0.20), short_, w, 0.06 * intensity);
+
+  acc += RING * ring(g, p, base * 0.090, max(base * 0.090 * 0.06, 1.0), 0.08 * intensity);
+  acc += WARM * ring(g, p + vec2(base * 0.08, base * 0.03), base * 0.045, max(base * 0.045 * 0.06, 1.0), 0.050 * intensity);
+  acc += CORE * ring(g, p - vec2(base * 0.11, base * 0.04), base * 0.032, max(base * 0.032 * 0.06, 1.0), 0.034 * intensity);
+
+  // 2D в Godot рисуется в линейном и кодируется в sRGB на выходе.
+  gl_FragColor = vec4(srgbEncode(acc), 1.0);
+}
+`;
+
+const glareMaterial = new THREE.ShaderMaterial({
+  uniforms: glareUniforms,
+  vertexShader: paniniVertexShader,
+  fragmentShader: glareFragmentShader,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthTest: false,
+  depthWrite: false,
+});
+const glareQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), glareMaterial);
+glareQuad.frustumCulled = false;
+glareQuad.renderOrder = 1;   // поверх панини-квада
+fxScene.add(glareQuad);
+
+// Объект с публичным списком solidMeshes (самолёт) — по ним рейкаст заслона.
+let occluderHost = null;
+export function setGlareOccluders(host) {
+  occluderHost = host;
+}
+
+const sunWorld = new THREE.Vector3();
+const camForward = new THREE.Vector3();
+const sunView = new THREE.Vector3();
+const sunRay = new THREE.Raycaster();
+let glareIntensity = 0;
+let glareLastMs = performance.now();
+
+/** Заслон солнца: луч из глаз к солнцу, как _is_sun_occluded (маска 1|2). */
+function sunOccluded(dir) {
+  const meshes = occluderHost?.solidMeshes;
+  if (!meshes || meshes.length === 0) return false;
+  sunRay.set(
+    sunView.copy(camera.position).addScaledVector(dir, 0.12),
+    dir
+  );
+  sunRay.far = SUN_DISTANCE;
+  return sunRay.intersectObjects(meshes, false).length > 0;
+}
+
+function updateGlare(dt) {
+  glareUniforms.uTime.value = performance.now() / 1000;
+  const dir = SUN_DIRECTION;
+  // camera.updateMatrixWorld обновляет matrixWorld, но не matrixWorldInverse —
+  // инвертируем сами, чтобы проекция солнца была точной.
+  camera.updateMatrixWorld();
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+
+  camera.getWorldDirection(camForward);
+  const alignment = camForward.dot(dir);
+  const facing = THREE.MathUtils.clamp(
+    (alignment - ALIGNMENT_START) / (1.0 - ALIGNMENT_START), 0, 1
+  );
+
+  let target = 0;
+  if (facing > 0 && !sunOccluded(dir)) {
+    sunWorld.copy(camera.position).addScaledVector(dir, SUN_DISTANCE);
+    sunWorld.project(camera);
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    // Экранные пиксели с y вниз (как в Godot unproject_position -> Control).
+    const sx = (sunWorld.x * 0.5 + 0.5) * size.x;
+    const sy = (1.0 - (sunWorld.y * 0.5 + 0.5)) * size.y;
+    const nx = sx / Math.max(size.x, 1) * 2 - 1;
+    const ny = sy / Math.max(size.y, 1) * 2 - 1;
+    const extent = Math.max(Math.abs(nx), Math.abs(ny));
+    const edgeFade = THREE.MathUtils.clamp(
+      (SCREEN_EDGE_FADE - extent) / (SCREEN_EDGE_FADE - 0.78), 0, 1
+    );
+    target = Math.pow(facing, 1.55) * edgeFade;
+    glareUniforms.uSun.value.set(sx, sy);
+  }
+
+  glareIntensity += (target - glareIntensity) * (1.0 - Math.exp(-7.0 * dt));
+  glareUniforms.uIntensity.value = glareIntensity;
+}
+
 function resize() {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   postTarget.setSize(size.x, size.y);
   paniniUniforms.render_size.value.set(postTarget.width, postTarget.height);
+  glareUniforms.uSize.value.set(size.x, size.y);
 }
 addEventListener('resize', resize);
 resize();
 
-/** Рендер сцены с панини-пройекцией — вызывается вместо renderer.render. */
+/** Рендер сцены с панини-пройекцией и бликом солнца — вместо renderer.render. */
 export function renderFrame() {
+  const now = performance.now();
+  updateGlare(Math.min((now - glareLastMs) / 1000, 0.05));
+  glareLastMs = now;
+
   renderer.setRenderTarget(postTarget);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
