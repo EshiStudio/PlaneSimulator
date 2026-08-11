@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { scene, camera, renderer, updateGround, updateSun, SUN_DIRECTION } from './scene.js';
 import { view, updateFirstPersonCamera, updateCameraLean } from './camera.js';
 import { Plane } from './plane.js';
-import { Character } from './character.js';
+import { Character, EYE_LOOK_RADIUS } from './character.js';
 import { PlayerPhysics, MAX_WALK_SPEED } from './player.js';
 import { renderFrame } from './postfx.js';
 import { bindInput, walkInput, jumpHeld, slideHeld, clearFlightControls } from './input.js';
@@ -147,6 +147,8 @@ function leaveNet() {
 // головы, сидение в кабине.
 const remoteChars = new Map();   // key ('host' у гостя / peerId у хоста) -> { char, target }
 const remoteWorld = new THREE.Vector3();
+const remoteHead = new THREE.Vector3();
+const candidateHead = new THREE.Vector3();
 
 function createRemoteCharacter() {
   const c = new Character();
@@ -155,6 +157,23 @@ function createRemoteCharacter() {
   scene.add(c.group);
   c.group.visible = false;     // до первого снапшота
   return c;
+}
+
+/** Цель глаз фигуры: ближайшая голова другого персонажа в радиусе взгляда. */
+function eyeTargetFor(rc) {
+  rc.char.headRoot.getWorldPosition(remoteHead);
+  let best = null;
+  let bestDist = EYE_LOOK_RADIUS;
+  character.headRoot.getWorldPosition(candidateHead);
+  const dSelf = candidateHead.distanceTo(remoteHead);
+  if (dSelf < bestDist) { bestDist = dSelf; best = candidateHead.clone(); }
+  for (const o of remoteChars.values()) {
+    if (o === rc) continue;
+    o.char.headRoot.getWorldPosition(candidateHead);
+    const d = candidateHead.distanceTo(remoteHead);
+    if (d < bestDist) { bestDist = d; best = candidateHead.clone(); }
+  }
+  return best;
 }
 
 function updateRemoteChar(rc, dt) {
@@ -185,7 +204,9 @@ function updateRemoteChar(rc, dt) {
   rc.char.externalPitch = t.pitch ?? 0;
   rc.char.stanceAmount = 0;
   rc.char.sunDirection.copy(SUN_DIRECTION);
-  rc.char.update(dt, null);
+  // Глаза как в оригинале: следят за ближайшим персонажем («взгляд в глаза»),
+  // иначе блуждают; моргание и щурение на солнце — те же, что у своего.
+  rc.char.update(dt, eyeTargetFor(rc));
 }
 
 /** Снапшот своего персонажа для других игроков (≈12 Гц). */
@@ -497,6 +518,8 @@ function animate() {
         pos: rc.char.group.position.toArray(),
         seated: rc.target?.seated ? 1 : 0,
         visible: rc.char.group.visible,
+        gaze: rc.char.gazeActivity,     // глаза следят за ближайшим игроком
+        blink: rc.char.blinkAmount,
       }));
     } catch (e) {
       __dbg.err = String(e && e.stack || e);

@@ -41,6 +41,7 @@ const RIGHT_EYE_BASE = new THREE.Vector3(0.17, -0.035, -0.370);
 
 const WALK_FULL_SPEED = 4.4;
 const EYE_LOOK_RADIUS = 7.0;
+export { EYE_LOOK_RADIUS };
 const BASE_BLINK_MIN = 14.0;
 const BASE_BLINK_VARIATION = 8.0;
 const SUN_BLINK_MIN = 0.65;

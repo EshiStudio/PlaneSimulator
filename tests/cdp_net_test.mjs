@@ -98,9 +98,11 @@ try {
   await waitFor(guest, `(() => { const n = window.__dbg?.net; return n && n.role === 'guest' && n.connected ? 'ok' : null; })()`, 60000, 'guest connect');
   console.log('guest connected via panel');
   await waitFor(host, `(() => { const n = window.__dbg?.net; return n && n.guests === 1 ? 'ok' : null; })()`, 30000, 'host sees guest');
-  await waitFor(guest, `(() => { const n = window.__dbg?.net; return n && n.role === 'guest' && n.connected ? 'ok' : null; })()`, 60000, 'guest connect');
-  console.log('guest connected via panel');
-  await waitFor(host, `(() => { const n = window.__dbg?.net; return n && n.guests === 1 ? 'ok' : null; })()`, 30000, 'host sees guest');
+
+  // Глаза ремоут-фигуры следят за ближайшим игроком («взгляд в глаза»): игроки
+  // стоят рядом — gazeActivity фигуры хоста у гостя должен подняться.
+  await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].visible && r[0].gaze > 0.5 ? 'ok' : null; })()`, 15000, 'eyes follow nearby player');
+  console.log('eye gaze replication OK');
 
   // Хост толкает самолёт: ArrowUp = move(0, -1), позиция (5, -5).
   await key(host, 'keyDown', 'ArrowUp', 'ArrowUp');
@@ -116,16 +118,13 @@ try {
   await waitFor(host, `(() => { const p = window.__dbg?.planePos; return p && Math.abs(p[0] - 5) < 0.01 && Math.abs(p[2] - 5) < 0.01 ? 'ok' : null; })()`, 10000, 'host applied guest push');
   console.log('guest->host push OK');
 
-  // Репликация игроков: хост идёт вперёд (W) — гость видит его фигуру в движении.
-  const hostStartZ = (await evalJson(host, `window.__dbg?.pos?.[2]`)) ?? 6.4;
-  await key(host, 'keyDown', 'w', 'KeyW');
+  // Репликация игроков: хост идёт назад (S, от самолёта) — гость видит
+  // его фигуру в движении (смещение от стартовой позиции > 0.5 м).
+  const hostStart = (await evalJson(host, `window.__dbg?.pos`)) ?? [0.4, 0, 6.4];
+  await key(host, 'keyDown', 's', 'KeyS');
   await sleep(800);
-  await key(host, 'keyUp', 'w', 'KeyW');
-  await sleep(2000);
-  console.log('host pos after walk:', JSON.stringify(await evalJson(host, `window.__dbg?.pos`)));
-  console.log('guest remotePlayers:', JSON.stringify(await evalJson(guest, `window.__dbg?.remotePlayers`)));
-  console.log('guest errors:', JSON.stringify(guest.errors));
-  await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].visible && r[0].pos[2] < ${hostStartZ - 0.5} ? 'ok' : null; })()`, 15000, 'guest sees host walk');
+  await key(host, 'keyUp', 's', 'KeyS');
+  await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; if (!r || !r[0] || !r[0].visible) return null; const p = r[0].pos; return Math.hypot(p[0] - ${hostStart[0]}, p[2] - ${hostStart[2]}) > 0.5 ? 'ok' : null; })()`, 15000, 'guest sees host walk');
   console.log('host->guest player replication OK');
 
   // Гость садится (E) и заводит двигатель (Пробел) из кабины.
