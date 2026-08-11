@@ -11,6 +11,7 @@ import { Hands } from './hands.js';
 import { Fire } from './fire.js';
 import { setStatus, clearStatus } from './status.js';
 import { CHARACTER_HEIGHT, BOARD_DISTANCE, SEAT_OFFSET } from './constants.js';
+import { createMulti } from './multi.js';
 
 const MODEL_URL = new URL('../assets/stylized_ww1_plane.glb', import.meta.url).href;
 const MAX_FRAME_DT = 0.05;
@@ -77,6 +78,7 @@ function toggleSeat() {
     seated = false;
     player.velocity.set(0, 0, 0);
     onFloor = true;
+    net.sendSeat(false);
     return;
   }
 
@@ -90,6 +92,20 @@ function toggleSeat() {
   character.group.rotation.set(0, 0, 0);
   view.yaw = plane.yaw;
   seated = true;
+  net.sendSeat(true);
+}
+
+// P2P-мультиплеер: хост рулит самолётом, гости подключаются по ссылке ?join=КОД.
+const net = createMulti({
+  push: (dx, dz) => plane.move(dx, dz),   // гость толкает самолёт
+  engine: () => { plane.engineOn = !plane.engineOn; },
+  seat: () => { net.seatEvents++; },      // гость сел/встал
+});
+net.seatEvents = 0;
+{
+  const params = new URLSearchParams(location.search);
+  if (params.has('host')) net.host();
+  else if (params.get('join')) net.join(params.get('join'));
 }
 
 bindInput(renderer.domElement, {
@@ -97,11 +113,16 @@ bindInput(renderer.domElement, {
   movePlane: (dx, dz) => {
     // Стрелок самолётом не управляет — только пулемётом.
     if (seated) return;
+    // Гость не трогает свой самолёт: он «чужой», толчок уходит хосту.
+    if (net.role === 'guest') { net.sendPush(dx, dz); return; }
     plane.move(dx, dz);
   },
   toggleEngine: () => {
     // Пешком Пробел — прыжок, в кабине — двигатель.
-    if (seated) plane.engineOn = !plane.engineOn;
+    if (!seated) return;
+    // Двигатель тоже «хостовый»: гость просит, хост переключает.
+    if (net.role === 'guest') { net.sendEngine(); return; }
+    plane.engineOn = !plane.engineOn;
   },
   toggleSeat,
   fireChange: active => {
@@ -255,6 +276,13 @@ function updateHud() {
       `W/S/A/D — идти | мышь — осмотреться | Пробел — прыжок | Shift — скольжение | ` +
       `${near ? 'E — сесть в самолёт' : 'подойдите к самолёту и нажмите E'}`;
   }
+  if (net.role === 'host') {
+    hud.textContent +=
+      `\n[P2P] комната: ${net.code} · игроков: ${net.guests + 1}\n` +
+      `друг подключается по ссылке: …${location.pathname}?join=${net.code}`;
+  } else if (net.role === 'guest') {
+    hud.textContent += `\n[P2P] ${net.connected ? 'подключено к хосту' : 'нет соединения'}`;
+  }
 }
 
 function animate() {
@@ -302,6 +330,10 @@ function animate() {
 
   fire.update(dt);
   plane.update(dt);
+  // Гость не симулирует самолёт — применяет состояние хоста с интерполяцией.
+  // Хост, наоборот, рассылает своё состояние гостям (≈12 Гц).
+  if (net.role === 'guest') net.applyRemote(dt, plane, seated);
+  else if (net.role === 'host') net.tickPlane(plane, performance.now());
   // Входы анимации персонажа — зеркало `_sync_local_player_avatar()` из
   // оригинального world.gd. Сидя в кабине физика пешехода не обновляется,
   // поэтому скорость и пол явно обнуляем, чтобы персонаж стоял в покое.
@@ -329,6 +361,17 @@ function animate() {
       __dbg.blocked = blocked(pos.x, pos.z, pos.y);
       __dbg.eyeY = eye.y;
       __dbg.pos = pos.toArray();
+      __dbg.planePos = plane.group.position.toArray();
+      __dbg.seated = seated;
+      __dbg.engine = plane.engineOn;
+      __dbg.net = {
+        role: net.role,
+        code: net.code,
+        connected: net.connected,
+        guests: net.guests,
+        seatEvents: net.seatEvents,
+        remote: net.role === 'guest' ? net.remote() : null,
+      };
     } catch (e) {
       __dbg.err = String(e && e.stack || e);
     }
