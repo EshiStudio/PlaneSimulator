@@ -132,6 +132,14 @@ try {
   await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; if (!r || !r[0] || !r[0].visible) return null; const p = r[0].pos; return Math.hypot(p[0] - ${hostStart[0]}, p[2] - ${hostStart[2]}) > 0.5 ? 'ok' : null; })()`, 15000, 'guest sees host walk');
   console.log('host->guest player replication OK');
 
+  // Коллизия игроков: хост развернулся и идёт обратно к гостю — упрётся
+  // в его фигуру на ~0.7 м и не пройдёт сквозь (как в оригинале SHOOTER).
+  await key(host, 'keyDown', 'w', 'KeyW');
+  await sleep(2500);
+  await key(host, 'keyUp', 'w', 'KeyW');
+  await waitFor(host, `(() => { const d = window.__dbg; const r = d?.remotePlayers?.[0]; if (!d?.pos || !r?.pos || !r.visible) return null; const dist = Math.hypot(d.pos[0] - r.pos[0], d.pos[2] - r.pos[2]); return dist >= 0.55 && dist < 1.3 ? 'ok' : null; })()`, 10000, 'players collide');
+  console.log('player collision OK');
+
   // Гость садится (E) и заводит двигатель (Пробел) из кабины.
   await key(guest, 'keyDown', 'e', 'KeyE');
   await key(guest, 'keyUp', 'e', 'KeyE');
@@ -144,10 +152,19 @@ try {
   await waitFor(guest, `window.__dbg?.engine === true ? 'ok' : null`, 20000, 'guest sees engine state');
   console.log('seat + engine sync OK');
 
+  // Синк турели: стрелок-гость наводит пулемёт — хост применяет углы
+  // (эмуляция наводки: реально углы идут от мыши через aimGun).
+  await evalJson(guest, `window.__dbg.sendGun(0.5, 0.3); 'ok'`);
+  await waitFor(host, `(() => { const g = window.__dbg; return g && Math.abs(g.gunYaw - 0.5) < 0.06 && Math.abs(g.gunPitch - 0.3) < 0.06 ? 'ok' : null; })()`, 10000, 'host sees turret aim');
+  console.log('turret aim guest->host OK');
+
   // Гость выходит из кабины и скользит (Shift): хост видит присед фигуры.
   await key(guest, 'keyDown', 'e', 'KeyE');
   await key(guest, 'keyUp', 'e', 'KeyE');
   await waitFor(host, `window.__dbg?.net?.seatEvents === 2 ? 'ok' : null`, 10000, 'host seat event 2');
+  // Пешком гость видит наводку хоста из plane-снапшотов (host держит углы).
+  await waitFor(guest, `(() => { const g = window.__dbg; return g && g.seated === false && Math.abs(g.gunYaw - 0.5) < 0.06 ? 'ok' : null; })()`, 15000, 'guest sees turret aim from snapshot');
+  console.log('turret aim host->guest OK');
   await key(guest, 'keyDown', 's', 'KeyS');
   await sleep(400);   // разгон до скорости слайда
   await key(guest, 'keyDown', 'ShiftLeft', 'ShiftLeft');

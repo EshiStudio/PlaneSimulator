@@ -72,6 +72,7 @@ export function createMulti(handlers = {}) {
         if (data.t === 'push') on('push', data.dx, data.dz);
         else if (data.t === 'engine') on('engine');
         else if (data.t === 'seat') on('seat', !!data.s);
+        else if (data.t === 'gun') on('gun', data.gy, data.gp);
         else if (data.t === 'player') {
           on('player', c.peer, data);
           // Ретрансляция другим гостям: все видят всех через хост.
@@ -140,6 +141,9 @@ export function createMulti(handlers = {}) {
     net.code = null;
     net.connected = false;
     net.guests = 0;
+    lastGun = 0;
+    lastGunGy = NaN;
+    lastGunGp = NaN;
   };
 
   // ---------- отправка состояния (хост) ----------
@@ -162,6 +166,21 @@ export function createMulti(handlers = {}) {
   net.sendPush = (dx, dz) => { try { conn?.send({ t: 'push', dx, dz }); } catch { } };
   net.sendEngine = () => { try { conn?.send({ t: 'engine' }); } catch { } };
   net.sendSeat = seated => { try { conn?.send({ t: 'seat', s: seated ? 1 : 0 }); } catch { } };
+  // Наводка пулемёта: стрелок-гость шлёт углы хосту (авторитет по самолёту);
+  // хост применяет и разносит всем через обычные plane-снапшоты. Троттлинг и
+  // отсечка неизменных значений — чтобы не спамить при неподвижной турели.
+  let lastGun = 0;
+  let lastGunGy = NaN;
+  let lastGunGp = NaN;
+  net.sendGun = (gy, gp) => {
+    if (Math.abs(gy - lastGunGy) < 0.005 && Math.abs(gp - lastGunGp) < 0.005) return;
+    const now = performance.now();
+    if (now - lastGun < SEND_INTERVAL) return;
+    lastGun = now;
+    lastGunGy = gy;
+    lastGunGp = gp;
+    try { conn?.send({ t: 'gun', gy, gp }); } catch { }
+  };
 
   // ---------- состояние игрока (обе стороны, ≈12 Гц) ----------
   let lastPlayer = 0;

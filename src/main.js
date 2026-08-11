@@ -26,6 +26,10 @@ const SIGHT_DISTANCE = 40;    // м
 // Радиус персонажа для пешей коллизии с корпусом: форма самолёта берётся из
 // сетки занятости (см. plane.js #buildCollisionGrid), а не из прямоугольника.
 const PLAYER_RADIUS = 0.35;   // м
+// Лимиты наводки пулемёта — зеркало plane.js (для углов гостя у хоста).
+const GUN_YAW_LIMIT = Math.PI / 2;
+const GUN_PITCH_MIN = THREE.MathUtils.degToRad(-25);
+const GUN_PITCH_MAX = THREE.MathUtils.degToRad(70);
 // Высота ступеньки при автошаге — та же, что в plane.js COLLISION_STEP_UP.
 const CHARACTER_STEP_UP = 0.5;
 // Радиус, в котором автошаг поднимает на ступеньку. Меньше радиуса тела:
@@ -233,6 +237,13 @@ const net = createMulti({
   push: (dx, dz) => plane.move(dx, dz),   // гость толкает самолёт
   engine: () => { plane.engineOn = !plane.engineOn; },
   seat: () => { net.seatEvents++; },      // гость сел/встал
+  // Стрелок-гость наводит пулемёт: хост применяет углы (лимиты — как в
+  // plane.aimGun) и разносит всем через plane-снапшоты.
+  gun: (gy, gp) => {
+    if (!plane.gunYaw) return;
+    plane.gunYaw.rotation.y = THREE.MathUtils.clamp(gy, -GUN_YAW_LIMIT, GUN_YAW_LIMIT);
+    plane.gunPitch.rotation.x = THREE.MathUtils.clamp(gp, GUN_PITCH_MIN, GUN_PITCH_MAX);
+  },
   status: msg => { renderNetPanel(); showNetStatus(msg); },
   error: err => { console.error(err); showNetStatus('ошибка: ' + (err?.type ?? err), true); },
   guests: () => renderNetPanel(),
@@ -315,6 +326,25 @@ const blocked = (x, z, y) => plane.isBlocked(x, z, PLAYER_RADIUS, y, CHARACTER_H
 // быстрый слайд (до ~15 м/с) не проскакивал сквозь ячейки сетки 0.2 м и не
 // «влетал» внутрь корпуса.
 const COLLISION_SUB_STEP = 0.1;
+// Коллизия с другими игроками — как в оригинале SHOOTER: персонажи — твёрдые
+// круги на земле, сквозь друг друга не проходят (локальный блокируется
+// фигурами чужих; их владельцы у себя блокируются точно так же, поэтому
+// снапшоты сходятся). Сидящие в кабине недостижимы и пропускаются.
+const PLAYER_COLLIDE_DIST = PLAYER_RADIUS * 2;
+const hitPlayer = (x, z, x0, z0) => {
+  // Из перекрытия (старт в одной точке) выходить можно, углубляться — нет:
+  // блокируется только движение внутрь радиуса чужой фигуры.
+  const R2 = PLAYER_COLLIDE_DIST * PLAYER_COLLIDE_DIST;
+  for (const rc of remoteChars.values()) {
+    if (!rc.target || rc.target.seated) continue;
+    const g = rc.char.group;
+    const newD2 = (x - g.position.x) ** 2 + (z - g.position.z) ** 2;
+    const oldD2 = (x0 - g.position.x) ** 2 + (z0 - g.position.z) ** 2;
+    if (oldD2 >= R2) { if (newD2 < R2) return true; }
+    else if (newD2 < oldD2) return true;
+  }
+  return false;
+};
 
 function walk(dt, input) {
   player.update(dt, input, onFloor, view.yaw);
@@ -330,8 +360,8 @@ function walk(dt, input) {
   for (let i = 0; i < steps; i++) {
     const sx = moveX / steps;
     const sz = moveZ / steps;
-    if (!blocked(p.x + sx, p.z, p.y)) p.x += sx;
-    if (!blocked(p.x, p.z + sz, p.y)) p.z += sz;
+    if (!blocked(p.x + sx, p.z, p.y) && !hitPlayer(p.x + sx, p.z, p.x, p.z)) p.x += sx;
+    if (!blocked(p.x, p.z + sz, p.y) && !hitPlayer(p.x, p.z + sz, p.x, p.z)) p.z += sz;
   }
   // Страховка от застревания: выталкиваем к ближайшей свободной точке,
   // только если ЦЕНТР игрока действительно внутри сетки (ниша, стены
@@ -436,6 +466,10 @@ function animate() {
     // наводка не сбивалась, когда машина разворачивается.
     const relativeYaw = view.yaw - plane.yaw;
     plane.aimGun(relativeYaw, view.pitch);
+    // Наводка турели уходит хосту (у хоста — no-op: conn отсутствует).
+    if (plane.gunYaw) {
+      net.sendGun(plane.gunYaw.rotation.y, plane.gunPitch.rotation.x);
+    }
     character.group.rotation.y = relativeYaw;   // корпус и голова следом
     clearFlightControls(plane);   // поверхности стоят в нейтрали
     // В кабине руки на пулемёте: без ходьбы и без качания от шага.
@@ -531,6 +565,9 @@ function animate() {
       __dbg.seated = seated;
       __dbg.engine = plane.engineOn;
       __dbg.hoverPlane = hoverPlane;
+      __dbg.gunYaw = plane.gunYaw ? plane.gunYaw.rotation.y : 0;
+      __dbg.gunPitch = plane.gunPitch ? plane.gunPitch.rotation.x : 0;
+      __dbg.sendGun = (gy, gp) => { net.sendGun(gy, gp); return 'ok'; };
       __dbg.net = {
         role: net.role,
         code: net.code,
