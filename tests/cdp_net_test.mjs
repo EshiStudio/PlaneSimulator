@@ -121,6 +121,10 @@ try {
   await key(host, 'keyDown', 'w', 'KeyW');
   await sleep(800);
   await key(host, 'keyUp', 'w', 'KeyW');
+  await sleep(2000);
+  console.log('host pos after walk:', JSON.stringify(await evalJson(host, `window.__dbg?.pos`)));
+  console.log('guest remotePlayers:', JSON.stringify(await evalJson(guest, `window.__dbg?.remotePlayers`)));
+  console.log('guest errors:', JSON.stringify(guest.errors));
   await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].visible && r[0].pos[2] < ${hostStartZ - 0.5} ? 'ok' : null; })()`, 15000, 'guest sees host walk');
   console.log('host->guest player replication OK');
 
