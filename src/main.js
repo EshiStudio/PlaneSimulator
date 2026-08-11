@@ -201,7 +201,11 @@ function updateRemoteChar(rc, dt) {
   rc.char.externalVelocity.set(0, t.vy, 0);
   rc.char.externalMoveSpeed = t.hspeed;
   rc.char.externalOnFloor = !!t.onFloor;
-  rc.char.externalPitch = t.pitch ?? 0;
+  // Взгляд вверх-вниз у чужих сглаживается: у владельца pitch меняется
+  // мгновенно от мыши, а голова другого не должна дёргаться.
+  const pitchK = 1 - Math.exp(-10 * dt);
+  rc.headPitch += ((t.pitch ?? 0) - rc.headPitch) * pitchK;
+  rc.char.externalPitch = rc.headPitch;
   rc.char.stanceAmount = t.stance ?? 0;   // присед при скольжении, как у своего
   rc.char.sunDirection.copy(SUN_DIRECTION);
   // Глаза как в оригинале: следят за ближайшим персонажем («взгляд в глаза»),
@@ -235,7 +239,7 @@ const net = createMulti({
   player: (key, snap) => {
     let rc = remoteChars.get(key);
     if (!rc) {
-      rc = { char: createRemoteCharacter(), target: null };
+      rc = { char: createRemoteCharacter(), target: null, headPitch: 0 };
       remoteChars.set(key, rc);
     }
     rc.target = snap;
@@ -405,18 +409,15 @@ function updateHud() {
     const gunPitch = plane.gunPitch === null ? 0 : plane.gunPitch.rotation.x;
     hud.textContent =
       `место стрелка   пулемёт: ${deg(gunYaw)}° по курсу, ${deg(gunPitch)}° по высоте   ` +
-      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}\n` +
-      'мышь — наводка пулемёта | ЛКМ — огонь | Пробел — двигатель | E — выйти  ' +
-      '(самолётом стрелок не управляет)';
+      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}`;
   } else {
     const c = character.group.position;
     const near = c.distanceTo(p) <= BOARD_DISTANCE;
     hud.textContent =
       `пешком   позиция (${c.x.toFixed(1)}, ${c.z.toFixed(1)})   ` +
       `до самолёта ${c.distanceTo(p).toFixed(1)} м   ` +
-      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}\n` +
-      `W/S/A/D — идти | мышь — осмотреться | Пробел — прыжок | Shift — скольжение | ` +
-      `${near ? 'E — сесть в самолёт' : 'подойдите к самолёту и нажмите E'}`;
+      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}` +
+      (near ? '\nE — сесть в самолёт' : '');
   }
 }
 
