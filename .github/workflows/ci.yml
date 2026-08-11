@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Setup three stub for node tests
+        run: |
+          mkdir -p node_modules/three
+          printf '{"name":"three","type":"module","main":"../../lib/three.module.js"}' > node_modules/three/package.json
+      - name: Character animation tests
+        run: node tests/test_character_anim.mjs
+
+  test-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Browser smoke test (load, walk, camera stable)
+        run: node tests/cdp_smoke.mjs
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
