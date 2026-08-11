@@ -146,6 +146,18 @@ try {
   await key(guest, 'keyUp', 'e', 'KeyE');
   await waitFor(guest, `window.__dbg?.seated === true ? 'ok' : null`, 10000, 'guest seated');
   await waitFor(host, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].seated === 1 ? 'ok' : null; })()`, 10000, 'host sees guest seated');
+
+  // Место в кабине одно для всех: хост подходит в зону посадки, пока гость
+  // сидит, и вытеснить его не может — сесть не получится (без приоритетов).
+  await key(host, 'keyDown', 'w', 'KeyW');
+  await sleep(900);
+  await key(host, 'keyUp', 'w', 'KeyW');
+  await key(host, 'keyDown', 'e', 'KeyE');
+  await key(host, 'keyUp', 'e', 'KeyE');
+  await sleep(1200);
+  if (await evalJson(host, `window.__dbg?.seated`)) throw new Error('host seated over occupied seat');
+  console.log('seat fairness OK');
+
   await waitFor(host, `window.__dbg?.net?.seatEvents === 1 ? 'ok' : null`, 10000, 'host seat event');
   await key(guest, 'keyDown', ' ', 'Space');
   await key(guest, 'keyUp', ' ', 'Space');

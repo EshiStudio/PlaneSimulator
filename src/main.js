@@ -89,6 +89,12 @@ function toggleSeat() {
   // Далеко — не садимся; подсказку об этом показывает HUD.
   if (character.group.position.distanceTo(plane.group.position) > BOARD_DISTANCE) return;
 
+  // Место в кабине одно для всех: пока кто-то из других игроков сидит,
+  // сесть нельзя. Правило одинаковое у каждого клиента — без приоритетов.
+  for (const rc of remoteChars.values()) {
+    if (rc.target?.seated) return;
+  }
+
   plane.group.add(character.group);
   character.group.position.set(SEAT_OFFSET.x, SEAT_OFFSET.y, SEAT_OFFSET.z);
   // Место заднего стрелка: он сидит спиной к пилоту и смотрит на хвост.
