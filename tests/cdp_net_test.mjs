@@ -104,6 +104,11 @@ try {
   await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].visible && r[0].gaze > 0.5 ? 'ok' : null; })()`, 15000, 'eyes follow nearby player');
   console.log('eye gaze replication OK');
 
+  // Прицел-«E»: гость стоит рядом с самолётом и смотрит на него —
+  // перекрестие превращается в E (hoverPlane true).
+  await waitFor(guest, `window.__dbg?.hoverPlane === true ? 'ok' : null`, 10000, 'crosshair E on plane');
+  console.log('crosshair-E hover OK');
+
   // Хост толкает самолёт: ArrowUp = move(0, -1), позиция (5, -5).
   await key(host, 'keyDown', 'ArrowUp', 'ArrowUp');
   await key(host, 'keyUp', 'ArrowUp', 'ArrowUp');

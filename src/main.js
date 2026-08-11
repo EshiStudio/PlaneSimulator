@@ -287,6 +287,14 @@ const hud = document.getElementById('hud');
 const crosshair = document.getElementById('crosshair');
 // Перекрестие — постоянный центр взаимодействия и точка схода пуль.
 crosshair.style.display = 'block';
+// Прицел-«E»: взгляд пешехода наведён на самолёт (по земле — конус ~18° от
+// направления на центр) и самолёт рядом — перекрестие плавно превращается
+// в E с кругом (CSS-переход). Геометрия, а не raycast: не зависит от высоты
+// луча глаз и стабильна в headless-тестах.
+const LOOK_ANGLE_TO_PLANE = Math.PI * 0.1;   // 18°
+const aimFwd = new THREE.Vector3();
+const aimToPlane = new THREE.Vector3();
+let hoverPlane = false;
 const clock = new THREE.Clock();
 const deg = radians => Math.round(THREE.MathUtils.radToDeg(radians));
 const eye = new THREE.Vector3();
@@ -412,12 +420,10 @@ function updateHud() {
       `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}`;
   } else {
     const c = character.group.position;
-    const near = c.distanceTo(p) <= BOARD_DISTANCE;
     hud.textContent =
       `пешком   позиция (${c.x.toFixed(1)}, ${c.z.toFixed(1)})   ` +
       `до самолёта ${c.distanceTo(p).toFixed(1)} м   ` +
-      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}` +
-      (near ? '\nE — сесть в самолёт' : '');
+      `двигатель: ${plane.engineOn ? 'ЗАВЕДЁН' : 'заглушен'}`;
   }
 }
 
@@ -464,6 +470,23 @@ function animate() {
     hands.update(dt, { x: input.strafe, y: input.forward }, moving ? player.filteredSpeed : 0, player.stanceAmount);
   }
 
+  if (seated) {
+    hoverPlane = false;
+  } else {
+    // «Наводится на самолёт»: направление взгляда (проекция на землю) почти
+    // совпадает с направлением на центр самолёта, и самолёт в радиусе посадки.
+    camera.getWorldDirection(aimFwd);
+    aimFwd.y = 0;
+    aimFwd.normalize();
+    aimToPlane.subVectors(plane.group.position, character.group.position);
+    aimToPlane.y = 0;
+    const dist = aimToPlane.length();
+    aimToPlane.divideScalar(dist || 1);
+    hoverPlane = dist <= BOARD_DISTANCE &&
+      aimFwd.angleTo(aimToPlane) <= LOOK_ANGLE_TO_PLANE;
+  }
+  crosshair.classList.toggle('on-plane', hoverPlane);
+
   fire.update(dt);
   plane.update(dt);
   // Гость не симулирует самолёт — применяет состояние хоста с интерполяцией.
@@ -507,6 +530,7 @@ function animate() {
       __dbg.planePos = plane.group.position.toArray();
       __dbg.seated = seated;
       __dbg.engine = plane.engineOn;
+      __dbg.hoverPlane = hoverPlane;
       __dbg.net = {
         role: net.role,
         code: net.code,
