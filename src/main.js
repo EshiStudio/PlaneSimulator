@@ -202,7 +202,7 @@ function updateRemoteChar(rc, dt) {
   rc.char.externalMoveSpeed = t.hspeed;
   rc.char.externalOnFloor = !!t.onFloor;
   rc.char.externalPitch = t.pitch ?? 0;
-  rc.char.stanceAmount = 0;
+  rc.char.stanceAmount = t.stance ?? 0;   // присед при скольжении, как у своего
   rc.char.sunDirection.copy(SUN_DIRECTION);
   // Глаза как в оригинале: следят за ближайшим персонажем («взгляд в глаза»),
   // иначе блуждают; моргание и щурение на солнце — те же, что у своего.
@@ -221,6 +221,7 @@ function playerSnap() {
     hspeed: player.horizontalSpeed,
     onFloor: onFloor ? 1 : 0,
     seated: seated ? 1 : 0,
+    stance: player.stanceAmount,   // скольжение/присед — фигура приседает
   };
 }
 
@@ -520,6 +521,7 @@ function animate() {
         visible: rc.char.group.visible,
         gaze: rc.char.gazeActivity,     // глаза следят за ближайшим игроком
         blink: rc.char.blinkAmount,
+        stance: rc.target?.stance ?? 0, // скольжение/присед
       }));
     } catch (e) {
       __dbg.err = String(e && e.stack || e);

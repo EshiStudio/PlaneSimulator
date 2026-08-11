@@ -127,6 +127,16 @@ try {
   await waitFor(guest, `(() => { const r = window.__dbg?.remotePlayers; if (!r || !r[0] || !r[0].visible) return null; const p = r[0].pos; return Math.hypot(p[0] - ${hostStart[0]}, p[2] - ${hostStart[2]}) > 0.5 ? 'ok' : null; })()`, 15000, 'guest sees host walk');
   console.log('host->guest player replication OK');
 
+  // Скольжение (Shift) реплицируется: гость разгоняется и скользит —
+  // хост видит присед фигуры (stance > 0.2).
+  await key(guest, 'keyDown', 's', 'KeyS');
+  await sleep(400);   // разгон до скорости слайда
+  await key(guest, 'keyDown', 'ShiftLeft', 'ShiftLeft');
+  await waitFor(host, `(() => { const r = window.__dbg?.remotePlayers; return r && r[0] && r[0].stance > 0.2 ? 'ok' : null; })()`, 10000, 'host sees guest slide');
+  await key(guest, 'keyUp', 'ShiftLeft', 'ShiftLeft');
+  await key(guest, 'keyUp', 's', 'KeyS');
+  console.log('slide replication OK');
+
   // Гость садится (E) и заводит двигатель (Пробел) из кабины.
   await key(guest, 'keyDown', 'e', 'KeyE');
   await key(guest, 'keyUp', 'e', 'KeyE');
