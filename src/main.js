@@ -1,11 +1,11 @@
 // Точка входа: связывает сцену, самолёт, персонажа и ввод, крутит главный цикл.
 import * as THREE from 'three';
-import { scene, camera, renderer, updateGround, updateSun } from './scene.js';
+import { scene, camera, renderer, updateGround, updateSun, SUN_DIRECTION } from './scene.js';
 import { view, updateFirstPersonCamera, updateCameraLean } from './camera.js';
 import { Plane } from './plane.js';
 import { Character } from './character.js';
 import { PlayerPhysics, MAX_WALK_SPEED } from './player.js';
-import { renderFrame, setGlareOccluders } from './postfx.js';
+import { renderFrame } from './postfx.js';
 import { bindInput, walkInput, jumpHeld, slideHeld, clearFlightControls } from './input.js';
 import { Hands } from './hands.js';
 import { Fire } from './fire.js';
@@ -27,13 +27,20 @@ const SIGHT_DISTANCE = 40;    // м
 const PLAYER_RADIUS = 0.35;   // м
 // Высота ступеньки при автошаге — та же, что в plane.js COLLISION_STEP_UP.
 const CHARACTER_STEP_UP = 0.5;
+// Радиус, в котором автошаг поднимает на ступеньку. Меньше радиуса тела:
+// иначе игрок, идущий ВДОЛЬ самолёта, цепляется боком за колёса и капот и
+// прыгает на невидимые постаменты. Подниматься должна только ступенька под
+// ногами, а не любая ячейка в радиусе тела.
+const STEP_LIFT_RADIUS = 0.15;
+// Радиус проверки «застрял ли центр тела внутри сетки» для выталкивания.
+// Малый: прижатый к стене игрок не должен дёргаться, выталкивание — только
+// для реальных клиньев (центр в ячейках), а не для касания стен.
+const UNSTICK_RADIUS = 0.2;
 // Где персонаж стоит в начале — у левого крыла, лицом к самолёту.
 const START_OFFSET = { x: -4.6, z: 1.4 };
 
 const plane = new Plane();
 scene.add(plane.group);
-// Меши корпуса (solidMeshes) закрывают солнце, когда стоишь за самолётом.
-setGlareOccluders(plane);
 
 const character = new Character();
 character.setHeight(CHARACTER_HEIGHT);
@@ -124,6 +131,11 @@ const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 // «Ноги» стоят на земле (y=0); при прыжке голова поднимается на velocity.y.
 const GROUND_Y = 0;
+// Занята ли точка телом самолёта на уровне тела игрока (см. plane.js
+// #isBlocked): ячейки ниже ступеньки проходимы, на верхних гранях можно
+// стоять, стены блокируют только на уровне тела. Нужна и в walk, и в
+// отладочном дампе __dbg, поэтому объявлена на уровне модуля.
+const blocked = (x, z, y) => plane.isBlocked(x, z, PLAYER_RADIUS, y, CHARACTER_HEIGHT);
 // Подшаг пешей коллизии: движение разбивается на куски этого размера, чтобы
 // быстрый слайд (до ~15 м/с) не проскакивал сквозь ячейки сетки 0.2 м и не
 // «влетал» внутрь корпуса.
@@ -135,7 +147,6 @@ function walk(dt, input) {
   // Коллизия с самолётом — сетка занятости мешей (см. plane.js
   // #buildCollisionGrid): ячейки ниже ступеньки проходимы, на верхних
   // гранях можно стоять, стены блокируют только на уровне тела.
-  const blocked = (x, z, y) => plane.isBlocked(x, z, PLAYER_RADIUS, y, CHARACTER_HEIGHT);
   const p = character.group.position;
   const moveX = player.velocity.x * dt;
   const moveZ = player.velocity.z * dt;
@@ -147,9 +158,12 @@ function walk(dt, input) {
     if (!blocked(p.x + sx, p.z, p.y)) p.x += sx;
     if (!blocked(p.x, p.z + sz, p.y)) p.z += sz;
   }
-  // Страховка от застревания: если всё же оказались внутри сетки (ниша,
-  // стены сомкнулись вокруг) — выталкиваем к ближайшей свободной точке.
-  if (blocked(p.x, p.z, p.y)) {
+  // Страховка от застревания: выталкиваем к ближайшей свободной точке,
+  // только если ЦЕНТР игрока действительно внутри сетки (ниша, стены
+  // сомкнулись вокруг). Проверка малым радиусом: иначе прижавшийся к стене
+  // игрок каждую секунду отпрыгивает назад на 0.12 м и дрожит у стены.
+  const wedged = plane.isBlocked(p.x, p.z, UNSTICK_RADIUS, p.y, CHARACTER_HEIGHT);
+  if (wedged) {
     outer: for (let r = 1; r <= 10; r++) {
       for (let a = 0; a < 8; a++) {
         const ang = (a * Math.PI) / 4;
@@ -166,14 +180,46 @@ function walk(dt, input) {
   // Вертикаль: прыжок/гравитация; приземление на верхние грани и
   // автоматический шаг на низкие ступеньки (колёса, стойки) при движении.
   p.y += player.velocity.y * dt;
-  const floor = Math.max(GROUND_Y, plane.floorAt(p.x, p.z, PLAYER_RADIUS, p.y + CHARACTER_STEP_UP));
+  // Пол под ногами: верхние грани ячеек В РАДИУСЕ НОГ (STEP_LIFT_RADIUS,
+  // много меньше радиуса тела). Иначе игрок, идущий МИМО капота/колёс или
+  // прижавшийся к стойке, поднимается на невидимые постаменты: ячейки в
+  // радиусе тела, но НЕ под ногами, задирают персонажа, а стена фюзеляжа
+  // клинит его на высоте.
+  let floor = GROUND_Y;
+  // Широкий поиск (по телу) ТОЛЬКО для onFloor: подъём на постаменты
+  // невозможен (canRise), зато onFloor стабилен даже на краю стойки/крыла,
+  // где узкий STEP_LIFT_RADIUS из-за дрейфа позиции то находит пол, то нет,
+  // и камера с анимациями прыгает каждый кадр.
+  let standFloor = GROUND_Y;
+  // Приземление (падение): пол ищем в радиусе ТЕЛА — падающий игрок
+  // накрывает крыло краем корпуса и садится на него.
+  if (player.velocity.y < 0 && !blocked(p.x, p.z, p.y)) {
+    floor = Math.max(floor, plane.floorAt(p.x, p.z, PLAYER_RADIUS, p.y + CHARACTER_STEP_UP));
+    standFloor = Math.max(standFloor, floor);
+  }
+  // Автошаг при ходьбе: только ступенька ПОД НОГАМИ (STEP_LIFT_RADIUS,
+  // много меньше радиуса тела). Иначе игрок, идущий МИМО капота/колёс или
+  // прижавшийся к стойке, поднимается на невидимые постаменты: ячейки в
+  // радиусе тела, но НЕ под ногами, задирают персонажа, а стена фюзеляжа
+  // клинит его на высоте. И не поднимаем, если позиция зажата стеной.
+  else if (player.horizontalSpeed > 0.2 && !blocked(p.x, p.z, p.y)) {
+    floor = Math.max(floor, plane.floorAt(p.x, p.z, STEP_LIFT_RADIUS, p.y + CHARACTER_STEP_UP));
+    standFloor = Math.max(standFloor, plane.floorAt(p.x, p.z, PLAYER_RADIUS, p.y + CHARACTER_STEP_UP));
+  }
+  // Стоим на месте НАД землёй (крыло, стойка, фюзеляж): пол под ногами нужен
+  // и для onFloor, иначе «стоим на самолёте» кажется прыжком и анимации
+  // толкают камеру. Проверку blocked() тут не используем: на стоянке она не
+  // нужна, а на границе «подошва == верх ячейки» дрожит из-за погрешности.
+  else if (p.y > GROUND_Y + 0.05) {
+    standFloor = Math.max(standFloor, plane.floorAt(p.x, p.z, PLAYER_RADIUS, p.y + CHARACTER_STEP_UP));
+  }
   const canRise = player.velocity.y < 0 || player.horizontalSpeed > 0.2;
   if (p.y <= floor && canRise) {
     p.y = floor;
     player.velocity.y = 0;
     onFloor = true;
   } else {
-    onFloor = p.y <= floor + 0.05;
+    onFloor = p.y <= Math.max(floor, standFloor) + 0.05;
   }
   character.group.rotation.y = view.yaw;   // корпус смотрит туда же, куда взгляд
 
@@ -256,9 +302,37 @@ function animate() {
 
   fire.update(dt);
   plane.update(dt);
+  // Входы анимации персонажа — зеркало `_sync_local_player_avatar()` из
+  // оригинального world.gd. Сидя в кабине физика пешехода не обновляется,
+  // поэтому скорость и пол явно обнуляем, чтобы персонаж стоял в покое.
+  character.externalVelocity.set(0, 0, 0);
+  character.externalMoveSpeed = 0;
+  character.externalOnFloor = true;
+  if (!seated) {
+    character.externalVelocity.copy(player.velocity);
+    character.externalMoveSpeed = player.horizontalSpeed;
+    character.externalOnFloor = onFloor;
+  }
+  character.externalPitch = view.pitch;
   character.stanceAmount = seated ? 0 : player.stanceAmount;
+  character.sunDirection.copy(SUN_DIRECTION);
   character.update(dt, null);
   updateFirstPersonCamera(character.eyePosition(eye));
+  if (__dbg) {
+    try {
+      const pos = character.group.position;
+      __dbg.onFloor = onFloor;
+      __dbg.jump = character.jumpAmount;
+      __dbg.walk = character.walkActivity;
+      __dbg.vy = player.velocity.y;
+      __dbg.hspeed = player.horizontalSpeed;
+      __dbg.blocked = blocked(pos.x, pos.z, pos.y);
+      __dbg.eyeY = eye.y;
+      __dbg.pos = pos.toArray();
+    } catch (e) {
+      __dbg.err = String(e && e.stack || e);
+    }
+  }
   updateGround();
   updateSun(plane.group.position);
   updateHud();
@@ -266,4 +340,5 @@ function animate() {
   renderFrame();
 }
 
+window.__dbg = {};
 animate();

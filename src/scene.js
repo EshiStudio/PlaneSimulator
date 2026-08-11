@@ -23,12 +23,12 @@ document.body.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 
-// Направление на солнце из Godot world.gd: DirectionalLight3D rotation
-// (-42, -36, 0) (порядок YXZ), свет светит вдоль локального -Z, а +Z —
-// обратно к солнцу: sun_direction = basis.z = (-0.437, 0.669, 0.601).
-// Энергия 2.2 и ambient 0.85 в оригинале, но здесь остаются прежними,
-// чтобы не менять яркость уже отстроенной сцены.
-export const SUN_DIRECTION = new THREE.Vector3(-0.437, 0.669, 0.601);
+// Направление на солнце — как в демо (drei Sky azimuth=1, inclination=0.6):
+// sunPosition = (cos(phi), sin(theta), sin(phi)), theta=0.1*PI, phi=PI →
+// (-1, 0.309, 0), нормализовано. Светит низко над горизонтом (el ~17°),
+// как на thumbnail демо.
+// Нормализованное направление демо-солнца (-1, 0.309, 0) / 1.0466
+export const SUN_DIRECTION = new THREE.Vector3(-0.9554, 0.2952, 0);
 
 export const sun = new THREE.DirectionalLight(0xffffff, 1.8);
 sun.position.copy(SUN_DIRECTION).multiplyScalar(35);
@@ -44,145 +44,179 @@ sun.shadow.bias = -0.0005;
 scene.add(sun);
 scene.add(sun.target);
 
-// --- Небо: встроенный шейдер Godot ProceduralSkyMaterial 4.7.1
-// (scene/resources/3d/sky_material.cpp), параметры из world.gd _build_blue_sky.
-// Цвета заданы линейными, как в Godot; сцена рендерится в линейное
-// пространство, поэтому прямо в шейдере применён AGX-тонмаппинг Godot 4.6
-// (tonemap_inc.glsl), а sRGB-кодирование даёт панини-проход.
+// --- Небо: three.js SkyShader (examples/jsm/objects/Sky.js, r139) — тот же,
+// что рендерит drei <Sky> в демо. Параметры демо: azimuth=1, inclination=0.6,
+// rayleigh=0.5, turbidity=10, mieCoefficient=0.005, mieDirectionalG=0.8.
+// Выход шейдера — линейный, как в демо (без тонмаппинга); sRGB-кодирование
+// даёт панини-проход.
+// g=0.8 давал слишком широкое белое пятно вокруг солнца («белая дыра» при
+// взгляде на него); 0.55 оставляет заметное свечение, но не выжигает небо.
+// g/mie: широкий хвост HG-фазы выжигал небо на 30-40° вокруг солнца в серо-белый
+// («белая дыра»). Мия почти убрана (0.0001, g=0.5) — небо остаётся релеевским
+// голубым, а белый диск и тёплый ореол рисует пост-процессинг (postfx.js).
 const SKY = {
-  top: new THREE.Color(0.18, 0.42, 0.95),
-  horizon: new THREE.Color(0.54, 0.76, 1.0),
-  curve: 0.08,
-  energy: 1.15,                    // sky_energy_multiplier
-  ground: new THREE.Color(0.62, 0.66, 0.70),
-  groundHorizon: new THREE.Color(0.54, 0.76, 1.0),  // задан в world.gd
-  groundCurve: 0.02,
+  rayleigh: 0.5,
+  turbidity: 10,
+  mieCoefficient: 0.0001,
+  mieDirectionalG: 0.5,
 };
-// Солнце в небе (LIGHT0 шейдера): DirectionalLight3D из world.gd — energy 2.2,
-// angular_distance 0 (диск-точка), sun_angle_max по умолчанию 30°,
-// inv_sun_curve = 1.6/pow(0.15, 1.4) (set_sun_curve из sky_material.cpp).
-const SUN_SKY = {
-  color: new THREE.Color(1, 1, 1),
-  energy: 2.2,
-  size: 0.0,                                          // rad, light_angular_distance
-  angleMax: Math.cos(30 * Math.PI / 180),             // 0.8660254
-  invCurve: 1.6 / Math.pow(0.15, 1.4),                // 22.78
-};
-// Параметры allenwp-кривой AGX, считаются как в environment_storage.cpp
-// (SDR: output_max_value=1, white=MAX(2, 10)=10, contrast=1).
-const AGX_CROSSOVER = 0.18;
-const AGX_SHOULDER_MAX = 1.0 - AGX_CROSSOVER;
-const AGX_TOE_A = ((1.0 / AGX_CROSSOVER) - 1.0) * Math.pow(AGX_CROSSOVER, 1.0);
-const AGX_SLOPE_DENOM = AGX_CROSSOVER + AGX_TOE_A;
-const AGX_SLOPE = (1.0 * Math.pow(AGX_CROSSOVER, 0.0) * AGX_TOE_A) / (AGX_SLOPE_DENOM * AGX_SLOPE_DENOM);
-const AGX_W = Math.pow(10.0 - AGX_CROSSOVER, 2) / AGX_SHOULDER_MAX * AGX_SLOPE;
 
-const skyMat = new THREE.ShaderMaterial({
+export const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   depthTest: false,
   uniforms: {
-    uTop: { value: SKY.top.clone().multiplyScalar(SKY.energy) },
-    uHorizon: { value: SKY.horizon.clone().multiplyScalar(SKY.energy) },
-    uInvSkyCurve: { value: 0.6 / SKY.curve },
-    uGround: { value: SKY.ground },
-    uGroundHorizon: { value: SKY.groundHorizon },
-    uInvGroundCurve: { value: 0.6 / SKY.groundCurve },
-    uSunDir: { value: SUN_DIRECTION },
-    uSunColor: { value: SUN_SKY.color },
-    uSunEnergy: { value: SUN_SKY.energy },
-    uSunSize: { value: Math.cos(SUN_SKY.size) },
-    uSunAngleMax: { value: SUN_SKY.angleMax },
-    uInvSunCurve: { value: SUN_SKY.invCurve },
-    uToeA: { value: AGX_TOE_A },
-    uSlope: { value: AGX_SLOPE },
-    uW: { value: AGX_W },
-    uAspect: { value: camera.aspect },
-    uFovY: { value: 60.0 },
-    uSize: { value: new THREE.Vector2(1, 1) },
+    uRayleigh: { value: SKY.rayleigh },
+    uTurbidity: { value: SKY.turbidity },
+    uMieCoefficient: { value: SKY.mieCoefficient },
+    uMieDirectionalG: { value: SKY.mieDirectionalG },
+    uSunDirection: { value: SUN_DIRECTION },
+    uUp: { value: new THREE.Vector3(0, 1, 0) },
+    uCameraPos: { value: camera.position },
+    uExposure: { value: 0.9 },   // 1.5 выжигал небо у солнца и у горизонта в белый
+    // (HDR-значения >1.0 после sRGB-кодирования); 0.9 держит солнце белым,
+    // а небо вокруг — голубым (0.8 оказался слишком «вечерним»)
+    uKnee: { value: 1.5 },   // мягкое колено на яркость: прижимает белую полосу
+    // у горизонта и ореол под солнцем, не трогая голубое небо (0 = выкл)
   },
   vertexShader: `
+    uniform vec3 uSunDirection;
+    uniform float uRayleigh;
+    uniform float uTurbidity;
+    uniform float uMieCoefficient;
+    varying vec3 vWorldPosition;
+    varying vec3 vSunDirection;
+    varying float vSunfade;
+    varying vec3 vBetaR;
+    varying vec3 vBetaM;
+    varying float vSunE;
+
+    const float e = 2.71828182845904523536028747135266249775724709369995957;
+    const float pi = 3.141592653589793238462643383279502884197169;
+
+    const vec3 lambda = vec3(680E-9, 550E-9, 450E-9);
+    const vec3 totalRayleigh = vec3(5.804542996261093E-6, 1.3562911419845635E-5, 3.0265902468824876E-5);
+
+    const float v = 4.0;
+    const vec3 K = vec3(0.686, 0.678, 0.666);
+    const vec3 MieConst = vec3(1.8399918514433978E14, 2.7798023919660528E14, 4.0790479543861094E14);
+
+    const float cutoffAngle = 1.6110731556870734;
+    const float steepness = 1.5;
+    // EE=1000 держит небо ярким по всей сфере; «белую дыру» лечит не снижение
+    // яркости, а сужение вперёд-конуса мии (uMieDirectionalG=0.6): белым
+    // остаётся только диск солнца и узкое свечение вокруг него.
+    const float EE = 1000.0;
+
+    float sunIntensity(float zenithAngleCos) {
+      zenithAngleCos = clamp(zenithAngleCos, -1.0, 1.0);
+      return EE * max(0.0, 1.0 - pow(e, -((cutoffAngle - acos(zenithAngleCos)) / steepness)));
+    }
+
+    vec3 totalMie(float T) {
+      float c = (0.2 * T) * 10E-18;
+      return 0.434 * c * MieConst;
+    }
+
     void main() {
+      vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+      vWorldPosition = worldPosition.xyz;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      gl_Position.z = gl_Position.w;
+
+      vSunDirection = normalize(uSunDirection);
+      vSunE = sunIntensity(dot(vSunDirection, vec3(0.0, 1.0, 0.0)));
+      vSunfade = 1.0 - clamp(1.0 - exp((uSunDirection.y / 450000.0)), 0.0, 1.0);
+
+      float rayleighCoefficient = uRayleigh - (1.0 * (1.0 - vSunfade));
+      vBetaR = totalRayleigh * rayleighCoefficient;
+      vBetaM = totalMie(uTurbidity) * uMieCoefficient;
     }
   `,
   fragmentShader: `
-    uniform vec3 uTop;
-    uniform vec3 uHorizon;
-    uniform float uInvSkyCurve;
-    uniform vec3 uGround;
-    uniform vec3 uGroundHorizon;
-    uniform float uInvGroundCurve;
-    uniform vec3 uSunDir;
-    uniform vec3 uSunColor;
-    uniform float uSunEnergy;
-    uniform float uSunSize;
-    uniform float uSunAngleMax;
-    uniform float uInvSunCurve;
-    uniform float uToeA;
-    uniform float uSlope;
-    uniform float uW;
-    uniform float uAspect;
-    uniform float uFovY;
-    uniform vec2 uSize;
+    varying vec3 vWorldPosition;
+    varying vec3 vSunDirection;
+    varying float vSunfade;
+    varying vec3 vBetaR;
+    varying vec3 vBetaM;
+    varying float vSunE;
 
-    // allenwp-кривая AGX из Godot tonemap_inc.glsl (contrast = 1.0).
-    vec3 agxAllenwp(vec3 x) {
-      float crossover = 0.18;
-      float shoulderMax = 1.0 - crossover;
-      vec3 s = x - crossover;
-      vec3 slopeS = uSlope * s;
-      s = slopeS * (1.0 + s / uW) / (1.0 + slopeS / shoulderMax);
-      s += crossover;
-      vec3 t = x / (x + uToeA);
-      return mix(s, t, lessThan(x, vec3(crossover)));
+    uniform float uMieDirectionalG;
+    uniform vec3 uCameraPos;
+    uniform float uExposure;
+    uniform float uKnee;
+
+    const float pi = 3.141592653589793238462643383279502884197169;
+
+    const float n = 1.0003;
+    const float N = 2.545E25;
+
+    const float rayleighZenithLength = 8.4E3;
+    const float mieZenithLength = 1.25E3;
+    const float sunAngularDiameterCos = 0.999956676946448443553574619906976478926848692873900859324;
+
+    const float THREE_OVER_SIXTEENPI = 0.05968310365946075;
+    const float ONE_OVER_FOURPI = 0.07957747154594767;
+
+    float rayleighPhase(float cosTheta) {
+      return THREE_OVER_SIXTEENPI * (1.0 + pow(cosTheta, 2.0));
+    }
+
+    float hgPhase(float cosTheta, float g) {
+      float g2 = pow(g, 2.0);
+      float inverse = 1.0 / pow(1.0 - 2.0 * g * cosTheta + g2, 1.5);
+      return ONE_OVER_FOURPI * ((1.0 - g2) * inverse);
     }
 
     void main() {
-      // Направление луча считаем попиксельно из камеры (как sky-шейдер в Godot):
-      // gl_FragCoord даёт позицию фрагмента в RenderTarget, а не UV купола.
-      float tanHalf = tan(radians(uFovY) * 0.5);
-      vec2 fragUV = gl_FragCoord.xy / uSize;
-      vec3 dirCam = normalize(vec3((fragUV.x * 2.0 - 1.0) * tanHalf * uAspect,
-                                   (fragUV.y * 2.0 - 1.0) * tanHalf, -1.0));
-      // Мировое направление: транспонированная часть поворота viewMatrix.
-      // GLSL m[i][j] = элемент (строка j, столбец i), поэтому для (m^T * d)
-      // индексы столбцов идут по строкам.
-      mat3 m = mat3(viewMatrix);
-      vec3 dir = normalize(vec3(
-        m[0][0] * dirCam.x + m[0][1] * dirCam.y + m[0][2] * dirCam.z,
-        m[1][0] * dirCam.x + m[1][1] * dirCam.y + m[1][2] * dirCam.z,
-        m[2][0] * dirCam.x + m[2][1] * dirCam.y + m[2][2] * dirCam.z));
+      vec3 direction = normalize(vWorldPosition - uCameraPos);
 
-      // Godot ProceduralSkyMaterial 4.7.1, sky(): небо/земля через
-      // inv_curve = 0.6/curve, энергия вшита в цвета, солнце (LIGHT0) —
-      // диск-точка (size=0) с ореолом до sun_angle_max.
-      float v = clamp(dir.y, -1.0, 1.0);
-      vec3 sky = mix(uTop, uHorizon, clamp(pow(1.0 - v, uInvSkyCurve), 0.0, 1.0));
-      float sunAngle = dot(uSunDir, dir);
-      if (sunAngle > uSunSize) {
-        sky = uSunColor * uSunEnergy;
-      } else if (sunAngle > uSunAngleMax) {
-        float c2 = (uSunSize - sunAngle) / (uSunSize - uSunAngleMax);
-        sky = mix(sky, uSunColor * uSunEnergy, clamp(pow(1.0 - c2, uInvSunCurve), 0.0, 1.0));
+      // optical length
+      // cutoff angle at 90 to avoid singularity in next formula.
+      float zenithAngle = acos(max(0.0, dot(vec3(0.0, 1.0, 0.0), direction)));
+      float inverse = 1.0 / (cos(zenithAngle) + 0.15 * pow(93.885 - ((zenithAngle * 180.0) / pi), -1.253));
+      float sR = rayleighZenithLength * inverse;
+      float sM = mieZenithLength * inverse;
+
+      // combined extinction factor
+      vec3 Fex = exp(-(vBetaR * sR + vBetaM * sM));
+
+      // in scattering
+      float cosTheta = dot(direction, vSunDirection);
+
+      float rPhase = rayleighPhase(cosTheta * 0.5 + 0.5);
+      vec3 betaRTheta = vBetaR * rPhase;
+
+      float mPhase = hgPhase(cosTheta, uMieDirectionalG);
+      vec3 betaMTheta = vBetaM * mPhase;
+
+      vec3 Lin = pow(vSunE * ((betaRTheta + betaMTheta) / (vBetaR + vBetaM)) * (1.0 - Fex), vec3(1.5));
+      Lin *= mix(vec3(1.0), pow(vSunE * ((betaRTheta + betaMTheta) / (vBetaR + vBetaM)) * Fex, vec3(1.0 / 2.0)), clamp(pow(1.0 - dot(vec3(0.0, 1.0, 0.0), vSunDirection), 5.0), 0.0, 1.0));
+
+      // nightsky
+      float theta = acos(direction.y);
+      float phi = atan(direction.z, direction.x);
+      vec2 uv = vec2(phi, theta) / vec2(2.0 * pi, pi) + vec2(0.5, 0.0);
+      vec3 L0 = vec3(0.1) * Fex;
+
+      // composition: солнечный диск рисуется в пост-процессинге (postfx.js) —
+      // на сетке купола диск алиасится в мозаику («белая дыра»).
+
+      vec3 texColor = (Lin + L0) * 0.04 + vec3(0.0, 0.0003, 0.00075);
+
+      vec3 retColor = pow(texColor, vec3(1.0 / (1.2 + (1.2 * vSunfade))));
+
+      // Как в демо: SkyShader без тонмаппинга, sRGB-кодирование — в панини-проходе.
+      // Мягкое колено (по яркости, оттенок сохраняется): значения выше 0.55
+      // линейно сжимаются — белая полоса у горизонта и дымка под солнцем
+      // перестают выжигать небо, голубое небо почти не меняется.
+      vec3 col = max(retColor, 0.0) * uExposure;
+      if (uKnee > 0.0) {
+        float L = dot(col, vec3(0.299, 0.587, 0.114));
+        float C = L / (1.0 + max(L - 0.55, 0.0) * uKnee);
+        col *= (C / max(L, 0.0001));
       }
-      vec3 ground = mix(uGround, uGroundHorizon, clamp(pow(1.0 + v, uInvGroundCurve), 0.0, 1.0));
-      vec3 color = mix(ground, sky, step(0.0, dir.y));
-      color = max(color, 0.0);   // AGX требует неотрицательный вход
-      // Godot 4.6 tonemap_agx: inset -> кривая -> clamp -> outset.
-      const mat3 inset = mat3(
-        0.544814746488245, 0.140416948464053, 0.0888104196149096,
-        0.373787398372697, 0.754137554567394, 0.178871756420858,
-        0.0813978551390581, 0.105445496968552, 0.732317823964232);
-      const mat3 outset = mat3(
-        1.96488741169489, -0.299313364904742, -0.164352742528393,
-        -0.855988495690215, 1.32639796461980, -0.238183969428088,
-        -0.108898916004672, -0.0270845997150571, 1.40253671195648);
-      color = inset * color;
-      color = agxAllenwp(color);
-      color = min(vec3(1.0), color);
-      color = outset * color;
-      gl_FragColor = vec4(color, 1.0);
+      gl_FragColor = vec4(col, 1.0);
     }
   `,
 });
@@ -190,14 +224,6 @@ const skyDome = new THREE.Mesh(new THREE.SphereGeometry(700, 32, 16), skyMat);
 skyDome.frustumCulled = false;
 skyDome.renderOrder = -10;   // рисуется первым, под всеми объектами
 scene.add(skyDome);
-
-// Размер drawing buffer (пиксели с учётом pixelRatio) — для gl_FragCoord.
-const skySize = new THREE.Vector2();
-const updateSkySize = () => {
-  renderer.getDrawingBufferSize(skySize);
-  skyMat.uniforms.uSize.value.copy(skySize);
-};
-updateSkySize();
 
 const groundMat = new THREE.ShaderMaterial({
   transparent: true,
@@ -276,6 +302,7 @@ export function updateGround() {
   // Купол неба всегда вокруг камеры: он не должен упираться в far-плоскость,
   // когда камера улетает далеко от начала координат.
   skyDome.position.copy(camera.position);
+  skyMat.uniforms.uCameraPos.value.copy(camera.position);
 }
 
 /** Свет и его теневая камера следуют за целью в безграничном мире. */
@@ -292,8 +319,6 @@ export function updateSun(target) {
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  skyMat.uniforms.uAspect.value = camera.aspect;
-  updateSkySize();
   renderer.setPixelRatio(pixelRatio()); // окно могли перетащить на другой монитор
   renderer.setSize(innerWidth, innerHeight);
 });

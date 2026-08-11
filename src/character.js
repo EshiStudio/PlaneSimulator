@@ -1,14 +1,17 @@
 // Персонаж, перенесённый из Godot-скрипта `cheracter/SHOOTER_generator_player_scripts.zip`
 // (`scripts/test_character.gd`). Модели там нет: фигура целиком строится кодом из
 // боксов, капсул и сфер, поэтому здесь повторена та же сборка на three.js —
-// размеры, цвета и смещения взяты один в один.
+// размеры, цвета и смещения взяты один в один. Анимации тоже портированы
+// целиком: ходьба, развороты, прыжок с отталкиванием и приземлением, слайд,
+// росток на голове, глаза с морганием и «щурится на солнце».
 //
-// Отличия от оригинала, вызванные тем, что у нас нет шутера:
-// - нет ходьбы, приседа и прыжков: играется только покой (в GDScript это те же
-//   формулы при нулевой активности);
-// - нет механики «щурится на солнце», поэтому моргание идёт по обычному
-//   интервалу, а не только при взгляде на светило;
-// - вместо блоба-тени под ногами работает настоящая тень сцены.
+// Входы (`externalVelocity`, `externalMoveSpeed`, `stanceAmount`, `externalPitch`,
+// `externalOnFloor`, `sunDirection`) заполняет main.js — зеркало
+// `_sync_local_player_avatar()` из оригинального world.gd.
+//
+// Отличие от оригинала: вместо блоба-тени под ногами работает настоящая тень
+// сцены. Голова при этом скрывается от владельца только визуально (прозрачный
+// материал), чтобы тень от головы оставалась.
 import * as THREE from 'three';
 
 const deg = THREE.MathUtils.degToRad;
@@ -36,14 +39,38 @@ const FOOT_LOCAL_BASE = new THREE.Vector3(0.0, -0.225, -0.075);
 const LEFT_EYE_BASE = new THREE.Vector3(-0.17, -0.035, -0.370);
 const RIGHT_EYE_BASE = new THREE.Vector3(0.17, -0.035, -0.370);
 
-const BLINK_MIN = 14.0;
-const BLINK_VARIATION = 8.0;
+const WALK_FULL_SPEED = 4.4;
+const EYE_LOOK_RADIUS = 7.0;
+const BASE_BLINK_MIN = 14.0;
+const BASE_BLINK_VARIATION = 8.0;
+const SUN_BLINK_MIN = 0.65;
+const SUN_BLINK_VARIATION = 0.55;
+const SUN_LOOK_DOT_START = 0.84;
+const SUN_GAZE_CHARGE_SECONDS = 2.8;
+const SUN_GAZE_DECAY_SECONDS = 1.4;
 const BLINK_CLOSE_SPEED = 12.5;
+const SUN_BLINK_CLOSE_SPEED = 14.0;
 const BLINK_OPEN_SPEED = 8.0;
+const SUN_BLINK_OPEN_SPEED = 9.0;
 const BLINK_HOLD_SECONDS = 0.020;
-// Насколько взгляд «включён»: в оригинале считается из присутствия цели, здесь
-// цель есть всегда (камера), но немного покоя оставляем, чтобы глаза жили.
-const GAZE_ACTIVITY = 0.7;
+const SUN_BLINK_HOLD_SECONDS = 0.035;
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+
+const clamp = THREE.MathUtils.clamp;
+const lerp = THREE.MathUtils.lerp;
+const exp = Math.exp;
+const pow = Math.pow;
+const abs = Math.abs;
+const sin = Math.sin;
+const cos = Math.cos;
+const maxf = Math.max;
+const minf = Math.min;
+const sign = Math.sign;
+
+// Порт Godot wrapf(x, -PI, PI): угол в (-PI, PI].
+function wrapRad(a) {
+  return ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+}
 
 // --- Кэш геометрии и материалов: деталей больше сотни, но форм немного ---
 const geometries = new Map();
@@ -142,14 +169,45 @@ const EYE_LOCAL = new THREE.Vector3(0, -0.035, -0.30);
 // слегка расширяется. Камера стоит на голове, поэтому при сплющивании глаз
 // опускается так же, как VIEW_HEIGHT 2.12 → SLIDE_VIEW_HEIGHT 1.02.
 const CROUCH_HEIGHT_SCALE = 1.18 / 2.35;
+// Ширина тела в слайде — ширина капсулы слайда относительно обычной
+// (в оригинале lerp(1.0, 1.08, crouch) прямо в _animate_body).
 const CROUCH_WIDTH_SCALE = 1.08;
 
 export class Character {
   constructor() {
     this.group = new THREE.Group();
     this.animationTime = 0;
-    // Степень «приседания» в слайде 0..1 — из PlayerPhysics.stanceAmount.
+    // Степень «приседания» в слайде 0..1 — из PlayerPhysics.stanceAmount
+    // (в оригинале external_stance_amount).
     this.stanceAmount = 0;
+
+    // Входы от физики игрока — зеркало world.gd `_sync_local_player_avatar()`.
+    this.externalVelocity = new THREE.Vector3();
+    this.externalMoveSpeed = 0;
+    this.externalPitch = 0;
+    this.externalOnFloor = true;
+    this.sunDirection = new THREE.Vector3();
+
+    // Состояние анимации — имена переменных из test_character.gd.
+    this.walkDirectionLocal = new THREE.Vector2(0, 1);
+    this.walkActivity = 0;
+    this.visualStanceAmount = 0;
+    this.previousExternalOnFloor = true;
+    this.jumpAmount = 0;
+    this.jumpAirTime = 0;
+    this.takeoffAmount = 0;
+    this.landingAmount = 0;
+    this.landingSettleAmount = 0;
+    this.turnIntensity = 0;
+    this.turnActivity = 0;
+    this.turnPhase = 0;
+    this.turnYawError = 0;
+    this.turnSpeed = 0;
+    this.previousYaw = null;   // null = первый кадр, шага поворота нет
+    this.gazeActivity = 0;
+    this.eyeDart = new THREE.Vector2();
+    this.eyeDartTimer = 0;
+    this.sunGazeCharge = 0;
 
     this.blinkAmount = 0;
     this.blinkTimer = 1.4;
@@ -157,6 +215,8 @@ export class Character {
     this.blinkHoldTimer = 0;
 
     this.eyeFocus = new THREE.Vector2();
+    this.headHidden = false;
+    this.headHiddenMaterials = new Map();
     this.#build();
   }
 
@@ -169,9 +229,35 @@ export class Character {
    * Прячет голову от самого игрока (в оригинале — hide_head_for_owner).
    * Обязательно при виде от первого лица: контур рисуется по ЗАДНИМ граням,
    * поэтому изнутри головы он закрывает весь экран.
+   *
+   * Просто выключить visible нельзя: three.js в теневом проходе пропускает
+   * невидимые объекты, и тень от головы исчезает (в оригинале тень — блоб,
+   * там голова и так не видна). Поэтому детали, отбрасывающие тень, делаем
+   * прозрачными (opacity 0, depthWrite false): в основной камере их не видно,
+   * а в карту теней они попадают. Контуры (castShadow=false) прячем целиком.
    */
   hideHeadForOwner(hidden) {
-    this.headRoot.visible = !hidden;
+    if (hidden === this.headHidden) return;
+    this.headHidden = hidden;
+    this.headRoot.traverse(o => {
+      if (!o.isMesh) return;
+      if (hidden) {
+        if (o.castShadow) {
+          this.headHiddenMaterials.set(o, o.material);
+          o.material = new THREE.MeshStandardMaterial({
+            transparent: true, opacity: 0, depthWrite: false,
+          });
+        } else {
+          o.visible = false;
+        }
+      } else {
+        if (this.headHiddenMaterials.has(o)) {
+          o.material = this.headHiddenMaterials.get(o);
+          this.headHiddenMaterials.delete(o);
+        }
+        o.visible = true;
+      }
+    });
   }
 
   /** Мировая точка глаз — отсюда смотрит камера от первого лица. */
@@ -356,126 +442,383 @@ export class Character {
   /** @param lookTarget мировая точка, за которой следят глаза (обычно камера). */
   update(dt, lookTarget) {
     this.animationTime += dt;
-    this.#animateBody();
-    this.#animateSprout();
+    this.#updateExternalMotion(dt, lookTarget);
+    this.#animateBody(dt);
     this.#animateEyes(dt, lookTarget);
   }
 
-  // Покой: те же формулы, что в _animate_body при нулевой активности.
-  #animateBody() {
-    const t = this.animationTime;
-    const idle = Math.sin(t * 1.55);
-    // Слайд (Shift): crouch-термины один в один из оригинального
-    // test_character.gd — корпус сплющивается по высоте и чуть расширяется,
-    // голова наклоняется вниз, руки уходят вперёд, ноги назад, стопы кверху.
-    const crouch = THREE.MathUtils.clamp(this.stanceAmount, 0, 1);
+  // --- Порт _process (face_target_enabled=false) из test_character.gd ---
 
-    this.bodyRoot.position.y = Math.sin(t * 1.8) * 0.008 - crouch * 0.015;
+  #updateExternalMotion(delta, lookTarget) {
+    if (this.previousYaw === null) this.previousYaw = this.group.rotation.y;
+    const yawStep = wrapRad(this.group.rotation.y - this.previousYaw);
+    this.previousYaw = this.group.rotation.y;
+    this.turnYawError = 0;
+    this.turnSpeed = lerp(this.turnSpeed, yawStep / maxf(delta, 0.001), 1 - exp(-12 * delta));
+    this.gazeActivity = lerp(this.gazeActivity, this.#targetPresence(lookTarget), 1 - exp(-8.5 * delta));
+
+    const horizontalVelocity = new THREE.Vector3(this.externalVelocity.x, 0, this.externalVelocity.z);
+    let measuredSpeed = horizontalVelocity.length();
+    if (!this.externalOnFloor) measuredSpeed *= 0.45;
+    const moveSpeed = maxf(this.externalMoveSpeed, measuredSpeed);
+    const speedActivity = clamp(moveSpeed / WALK_FULL_SPEED, 0, 1);
+    let targetWalkDirection = this.walkDirectionLocal.clone();
+    if (measuredSpeed > 0.04) {
+      // Локальные оси: поворот корпуса только по Y, базис обращается поворотом
+      // на -yaw (масштаб корпуса однородный и на направление не влияет).
+      const a = -this.group.rotation.y;
+      const c = cos(a), s = sin(a);
+      const localX = c * horizontalVelocity.x + s * horizontalVelocity.z;
+      const localZ = -s * horizontalVelocity.x + c * horizontalVelocity.z;
+      targetWalkDirection.set(localX, -localZ);
+      if (targetWalkDirection.lengthSq() > 0.0001) targetWalkDirection.normalize();
+    } else if (speedActivity > 0.05) {
+      targetWalkDirection.set(0, 1);
+    }
+
+    this.walkDirectionLocal.lerp(targetWalkDirection, 1 - exp(-14 * delta));
+    if (this.walkDirectionLocal.lengthSq() > 1) this.walkDirectionLocal.normalize();
+    this.walkActivity = lerp(this.walkActivity, speedActivity, 1 - exp(-12 * delta));
+    this.visualStanceAmount = lerp(this.visualStanceAmount, clamp(this.stanceAmount, 0, 1), 1 - exp(-16 * delta));
+    this.#updateJumpState(delta);
+
+    const stanceActivity = this.visualStanceAmount * 0.40;
+    const turnActivityTarget = clamp(abs(this.turnSpeed) * 0.16, 0, 1);
+    const targetTurn = clamp(this.turnSpeed * 0.18, -1, 1);
+    const targetActivity = maxf(maxf(maxf(this.walkActivity, stanceActivity), this.jumpAmount * 0.55), turnActivityTarget);
+
+    this.turnIntensity = lerp(this.turnIntensity, targetTurn, 1 - exp(-11 * delta));
+    this.turnActivity = lerp(this.turnActivity, targetActivity, 1 - exp(-9 * delta));
+  }
+
+  #updateJumpState(delta) {
+    if (this.previousExternalOnFloor && !this.externalOnFloor) {
+      this.jumpAmount = maxf(this.jumpAmount, 0.75);
+      this.takeoffAmount = 1;
+      this.landingAmount = 0;
+      this.landingSettleAmount = 0;
+      this.jumpAirTime = 0;
+    }
+    if (!this.previousExternalOnFloor && this.externalOnFloor) {
+      this.landingAmount = 1;
+      this.landingSettleAmount = 1;
+      this.takeoffAmount = 0;
+    }
+    this.previousExternalOnFloor = this.externalOnFloor;
+
+    this.jumpAirTime = this.externalOnFloor ? 0 : this.jumpAirTime + delta;
+    this.jumpAmount = lerp(this.jumpAmount, this.externalOnFloor ? 0 : 1, 1 - exp(-12 * delta));
+    this.takeoffAmount = maxf(this.takeoffAmount - delta * 4.2, 0);
+    this.landingAmount = maxf(this.landingAmount - delta * 4.6, 0);
+    this.landingSettleAmount = maxf(this.landingSettleAmount - delta * 2.05, 0);
+  }
+
+  // --- Порт _animate_body(delta) ---
+
+  #animateBody(delta) {
+    if (this.turnActivity > 0.015) {
+      let phaseDirection = sign(this.walkDirectionLocal.y);
+      if (abs(phaseDirection) < 0.001) phaseDirection = sign(this.turnIntensity);
+      if (abs(phaseDirection) < 0.001) phaseDirection = 1;
+      this.turnPhase += delta * (4.4 + this.turnActivity * 6.0 + this.walkActivity * this.externalMoveSpeed * 0.42) * phaseDirection;
+    }
+
+    const idle = sin(this.animationTime * 1.55);
+    const activity = this.turnActivity;
+    const turn = this.turnIntensity;
+    const stepLeft = sin(this.turnPhase);
+    const stepRight = sin(this.turnPhase + Math.PI);
+    const walkForward = this.walkDirectionLocal.y * this.walkActivity;
+    const walkSide = this.walkDirectionLocal.x * this.walkActivity;
+    const strideScale = 0.35 + abs(walkForward) * 0.85 + abs(walkSide) * 0.55;
+    const liftLeft = pow(maxf(0, stepLeft), 0.75) * activity * (0.65 + this.walkActivity * 0.55);
+    const liftRight = pow(maxf(0, stepRight), 0.75) * activity * (0.65 + this.walkActivity * 0.55);
+    const plantedLeft = 1 - liftLeft;
+    const plantedRight = 1 - liftRight;
+    const sideLeft = -0.010 * activity + liftLeft * 0.018 + stepLeft * walkSide * 0.035;
+    const sideRight = 0.010 * activity - liftRight * 0.018 + stepRight * walkSide * 0.035;
+    const strideLeft = clamp(stepLeft, -0.65, 0.65) * activity * strideScale;
+    const strideRight = clamp(stepRight, -0.65, 0.65) * activity * strideScale;
+    const crouch = this.visualStanceAmount;
+    const rising = clamp(this.externalVelocity.y / 7.0, 0, 1) * this.jumpAmount;
+    const falling = clamp(-this.externalVelocity.y / 9.0, 0, 1) * this.jumpAmount;
+    const airPhase = clamp(this.jumpAirTime / 0.70, 0, 1);
+    const apex = this.jumpAmount * clamp(1 - abs(airPhase - 0.50) * 2, 0, 1);
+    const launchStretch = clamp(this.takeoffAmount * 0.85 + rising * 0.55, 0, 1);
+    const landingImpact = pow(clamp(this.landingAmount, 0, 1), 1.28);
+    const landingSettle = pow(clamp(this.landingSettleAmount, 0, 1), 1.55);
+    const landingRebound = clamp((landingSettle - landingImpact) * 0.50, 0, 0.26);
+    const landingSquash = clamp(landingImpact * 0.82 + landingSettle * 0.18, 0, 1);
+    const landingTail = clamp(landingSettle * 0.42 + landingRebound * 0.30, 0, 1);
+    const tuck = clamp(apex * 0.92 + rising * 0.18 - falling * 0.18, 0, 1);
+    const extendForLanding = clamp(falling * 0.90 + landingSquash * 0.10 + landingRebound * 0.18, 0, 1);
+    const landingBrace = clamp(falling * 0.42 + landingSquash * 0.78 + landingTail * 0.34, 0, 1);
+    const armLift = clamp(launchStretch * 0.74 + apex * 0.28, 0, 1);
+    const armSpread = clamp(this.jumpAmount * 0.72 + landingBrace * 0.26, 0, 1);
+    const kneeFold = clamp(tuck * 1.18 + landingSquash * 0.58 + landingTail * 0.18 + falling * 0.12 - launchStretch * 0.20, 0, 1);
+    const kneeStraighten = clamp(launchStretch * 0.55 + extendForLanding * 0.46 + landingRebound * 0.30 + landingTail * 0.14 - landingSquash * 0.20, 0, 1);
+    const legAirSpread = this.jumpAmount * 0.028 + kneeFold * 0.030 + landingBrace * 0.020;
+    const bodyBob = sin(this.animationTime * 1.8) * 0.008 + (liftLeft + liftRight) * 0.018 + this.walkActivity * abs(sin(this.turnPhase * 2.0)) * 0.018 + activity * 0.006;
+    const jumpLift = launchStretch * 0.090 + apex * 0.140 + rising * 0.030 - landingSquash * 0.060 - landingTail * 0.018 + landingRebound * 0.042;
+
+    this.bodyRoot.position.y = bodyBob - crouch * 0.015 + jumpLift;
     this.bodyRoot.scale.set(
-      1 + crouch * (CROUCH_WIDTH_SCALE - 1),
-      1 - crouch * (1 - CROUCH_HEIGHT_SCALE),
-      1 + crouch * (CROUCH_WIDTH_SCALE - 1),
+      lerp(1, CROUCH_WIDTH_SCALE, crouch) - launchStretch * 0.045 + landingSquash * 0.105 + landingTail * 0.028 - landingRebound * 0.024,
+      lerp(1, CROUCH_HEIGHT_SCALE, crouch) + launchStretch * 0.135 - landingSquash * 0.190 - landingTail * 0.045 + landingRebound * 0.060,
+      lerp(1, CROUCH_WIDTH_SCALE, crouch) - launchStretch * 0.030 + landingSquash * 0.095 + landingTail * 0.024 - landingRebound * 0.020,
     );
-    this.bodyRoot.rotation.z = idle * deg(0.5);
-    this.headRoot.rotation.x = Math.sin(t * 1.6) * deg(0.6) - crouch * deg(4);
-
-    this.leftArm.rotation.z = deg(-10) + idle * deg(0.9);
-    this.rightArm.rotation.z = deg(10) - idle * deg(0.9);
-    this.leftArm.rotation.x = crouch * deg(8);
-    this.rightArm.rotation.x = crouch * deg(8);
-
-    this.leftLeg.rotation.z = deg(1);
-    this.rightLeg.rotation.z = deg(-1);
-    this.leftLeg.rotation.x = -crouch * deg(14);
-    this.rightLeg.rotation.x = -crouch * deg(14);
-    this.leftFoot.rotation.x = crouch * deg(7);
-    this.rightFoot.rotation.x = crouch * deg(7);
-  }
-
-  #animateSprout() {
-    const t = this.animationTime;
-    const sideSway = Math.sin(t * 1.85) * deg(1.6);
-    const flutter = Math.sin(t * 3.4) * deg(1.15);
-
-    this.sproutRoot.rotation.set(0, 0, sideSway);
-    this.sproutStem.rotation.z = deg(1) + sideSway * 0.22;
-    this.leftSproutLeaf.rotation.set(0, deg(-6) - sideSway * 0.24, deg(-39) + sideSway * 0.46 - flutter);
-    this.rightSproutLeaf.rotation.set(0, deg(6) - sideSway * 0.24, deg(39) + sideSway * 0.46 + flutter);
-  }
-
-  #animateEyes(dt, lookTarget) {
-    this.#updateBlink(dt);
-
-    const focusTarget = this.#eyeFocusFor(lookTarget);
-    this.eyeFocus.lerp(focusTarget, 1 - Math.exp(-9 * dt));
-
-    const t = this.animationTime;
-    const idleAmount = 1 - GAZE_ACTIVITY;
-    const focusX = this.eyeFocus.x + Math.sin(t * 0.55) * 0.010 * idleAmount;
-    const focusY = this.eyeFocus.y + Math.sin(t * 0.75) * 0.006 * idleAmount;
-
-    const shiftX = THREE.MathUtils.lerp(0.040, 0.105, GAZE_ACTIVITY);
-    const shiftY = THREE.MathUtils.lerp(0.022, 0.060, GAZE_ACTIVITY);
-    const shiftZ = THREE.MathUtils.lerp(0.006, 0.018, GAZE_ACTIVITY);
-    const convergence = GAZE_ACTIVITY * 0.018;
-    const offsetX = focusX * shiftX;
-    const offsetY = focusY * shiftY;
-    const offsetZ = -0.030 - Math.abs(focusX) * shiftZ;
-
-    this.leftEye.position.set(LEFT_EYE_BASE.x + offsetX + convergence, LEFT_EYE_BASE.y + offsetY, LEFT_EYE_BASE.z + offsetZ);
-    this.rightEye.position.set(RIGHT_EYE_BASE.x + offsetX - convergence, RIGHT_EYE_BASE.y + offsetY, RIGHT_EYE_BASE.z + offsetZ);
-
-    const glint = vec(-0.014 + focusX * 0.006, 0.014 + focusY * 0.004, -0.014);
-    this.leftGlint.position.copy(this.leftEye.position).add(glint);
-    this.rightGlint.position.copy(this.rightEye.position).add(glint);
-
-    // Веки: зрачок и белок сплющиваются по высоте, блик гаснет.
-    const openScale = THREE.MathUtils.clamp(THREE.MathUtils.lerp(1.0, 0.08, this.blinkAmount), 0.06, 1.0);
-    const widen = THREE.MathUtils.clamp(Math.abs(this.eyeFocus.x) * 0.045, 0, 0.055);
-    this.leftEye.scale.set(1 + widen, openScale, 0.16);
-    this.rightEye.scale.set(1 + widen, openScale, 0.16);
-    this.leftEyeWhite.scale.set(1, openScale, 1);
-    this.rightEyeWhite.scale.set(1, openScale, 1);
-    const glintOpen = THREE.MathUtils.clamp(openScale * (1 - this.blinkAmount), 0, 1);
-    this.leftGlint.scale.set(1, glintOpen, 0.10);
-    this.rightGlint.scale.set(1, glintOpen, 0.10);
-  }
-
-  #eyeFocusFor(lookTarget) {
-    const focus = new THREE.Vector2();
-    if (!lookTarget) return focus;
-    const local = this.headRoot.worldToLocal(lookTarget.clone());
-    const depth = Math.max(Math.abs(local.z), 0.25);
-    focus.set(
-      THREE.MathUtils.clamp(local.x / depth * 1.85, -1, 1),
-      THREE.MathUtils.clamp(local.y / depth * 1.20, -0.75, 0.75)
+    this.bodyRoot.rotation.set(
+      -abs(turn) * deg(1.5) - walkForward * deg(1.4) + launchStretch * deg(4.0) - falling * deg(6.0) + landingSquash * deg(6.2) + landingTail * deg(2.2) - landingRebound * deg(2.4),
+      -turn * deg(3.8) + walkSide * deg(2.5),
+      idle * deg(0.5) - turn * deg(4.2) - walkSide * deg(3.0),
     );
-    // Лицо смотрит по -Z: цель позади головы не должна «выворачивать» зрачки.
-    if (local.z > 0) focus.multiplyScalar(-1);
-    return focus;
+
+    this.headRoot.rotation.set(
+      sin(this.animationTime * 1.6) * deg(0.6) + abs(turn) * deg(0.8) + this.externalPitch * 0.22 - crouch * deg(4.0) - tuck * deg(4.0) + landingSquash * deg(5.2) + landingTail * deg(1.8) - landingRebound * deg(1.8),
+      turn * deg(8.0) + clamp(this.turnYawError, -0.45, 0.45) * 0.10 + walkSide * deg(3.5),
+      -turn * deg(1.6),
+    );
+
+    this.leftArm.position.set(
+      -0.285 - armSpread * 0.100 - landingBrace * 0.024,
+      0.96 + armLift * 0.120 - landingBrace * 0.030,
+      -0.025 * activity - launchStretch * 0.020 + landingBrace * 0.045,
+    );
+    this.rightArm.position.set(
+      0.285 + armSpread * 0.100 + landingBrace * 0.024,
+      0.96 + armLift * 0.120 - landingBrace * 0.030,
+      -0.025 * activity - launchStretch * 0.020 + landingBrace * 0.045,
+    );
+    this.leftArm.rotation.set(
+      -turn * deg(15.0) + stepRight * activity * deg(8.0) + stepRight * this.walkActivity * deg(18.0) + crouch * deg(8.0) - launchStretch * deg(10.0) + landingBrace * deg(14.0),
+      turn * deg(4.5) - armSpread * deg(9.0) - landingSquash * deg(3.8) - landingTail * deg(1.4) + landingRebound * deg(1.5),
+      deg(-10.0) - activity * deg(2.0) + idle * deg(0.9) - armLift * deg(39.0) - armSpread * deg(12.0) + landingSquash * deg(10.5) + landingTail * deg(4.0) - landingRebound * deg(4.0),
+    );
+    this.rightArm.rotation.set(
+      turn * deg(15.0) + stepLeft * activity * deg(8.0) + stepLeft * this.walkActivity * deg(18.0) + crouch * deg(8.0) - launchStretch * deg(10.0) + landingBrace * deg(14.0),
+      turn * deg(4.5) + armSpread * deg(9.0) + landingSquash * deg(3.8) + landingTail * deg(1.4) - landingRebound * deg(1.5),
+      deg(10.0) + activity * deg(2.0) - idle * deg(0.9) + armLift * deg(39.0) + armSpread * deg(12.0) - landingSquash * deg(10.5) - landingTail * deg(4.0) + landingRebound * deg(4.0),
+    );
+
+    this.leftLeg.position.set(
+      LEFT_LEG_BASE.x + sideLeft - legAirSpread,
+      LEFT_LEG_BASE.y + liftLeft * 0.018 + tuck * 0.110 - launchStretch * 0.034 - extendForLanding * 0.058 - landingSquash * 0.014 - landingTail * 0.010 + landingRebound * 0.014,
+      LEFT_LEG_BASE.z + strideLeft * 0.028 + tuck * 0.026 - extendForLanding * 0.058 + landingSquash * 0.010 + landingTail * 0.006,
+    );
+    this.rightLeg.position.set(
+      RIGHT_LEG_BASE.x + sideRight + legAirSpread,
+      RIGHT_LEG_BASE.y + liftRight * 0.018 + tuck * 0.106 - launchStretch * 0.030 - extendForLanding * 0.058 - landingSquash * 0.014 - landingTail * 0.010 + landingRebound * 0.014,
+      RIGHT_LEG_BASE.z + strideRight * 0.028 - tuck * 0.026 - extendForLanding * 0.052 + landingSquash * 0.010 + landingTail * 0.006,
+    );
+    this.leftLeg.rotation.set(
+      strideLeft * deg(22.0) - liftLeft * deg(7.0) - crouch * deg(14.0) - launchStretch * deg(10.0) + tuck * deg(35.0) + extendForLanding * deg(14.0) + landingSquash * deg(22.0) + landingTail * deg(8.0) - landingRebound * deg(8.0),
+      turn * deg(5.0) + strideLeft * deg(3.0) + walkSide * deg(5.0) - kneeFold * deg(3.5),
+      deg(1.0) - turn * deg(2.0) + liftLeft * deg(1.0) - walkSide * deg(2.0) - kneeFold * deg(8.5) - landingBrace * deg(3.0),
+    );
+    this.rightLeg.rotation.set(
+      strideRight * deg(22.0) - liftRight * deg(7.0) - crouch * deg(14.0) - launchStretch * deg(8.0) + tuck * deg(33.0) + extendForLanding * deg(13.0) + landingSquash * deg(22.0) + landingTail * deg(8.0) - landingRebound * deg(8.0),
+      turn * deg(5.0) + strideRight * deg(3.0) + walkSide * deg(5.0) + kneeFold * deg(3.5),
+      deg(-1.0) - turn * deg(2.0) - liftRight * deg(1.0) - walkSide * deg(2.0) + kneeFold * deg(8.5) + landingBrace * deg(3.0),
+    );
+
+    this.leftLowerLeg.position.copy(LOWER_LEG_BASE);
+    this.rightLowerLeg.position.copy(LOWER_LEG_BASE);
+    this.leftLowerLeg.rotation.set(
+      stepRight * activity * deg(5.0) - kneeFold * deg(84.0) + kneeStraighten * deg(18.0) - landingSquash * deg(11.0) - landingTail * deg(3.5) + landingRebound * deg(7.0),
+      turn * deg(2.5) + walkSide * deg(2.5) + kneeFold * deg(4.5),
+      liftLeft * deg(1.0) - walkSide * deg(2.0) + kneeFold * deg(13.0) - landingBrace * deg(3.0),
+    );
+    this.rightLowerLeg.rotation.set(
+      stepLeft * activity * deg(5.0) - kneeFold * deg(82.0) + kneeStraighten * deg(17.0) - landingSquash * deg(11.0) - landingTail * deg(3.5) + landingRebound * deg(7.0),
+      turn * deg(2.5) + walkSide * deg(2.5) - kneeFold * deg(4.5),
+      -liftRight * deg(1.0) - walkSide * deg(2.0) - kneeFold * deg(13.0) + landingBrace * deg(3.0),
+    );
+
+    this.leftFoot.position.set(
+      FOOT_LOCAL_BASE.x,
+      FOOT_LOCAL_BASE.y + liftLeft * 0.014 + tuck * 0.020 - launchStretch * 0.014 - extendForLanding * 0.024 + landingSquash * 0.016 + landingTail * 0.010,
+      FOOT_LOCAL_BASE.z + strideLeft * 0.018 + tuck * 0.014 - extendForLanding * 0.034 + landingSquash * 0.012 + landingTail * 0.006,
+    );
+    this.rightFoot.position.set(
+      FOOT_LOCAL_BASE.x,
+      FOOT_LOCAL_BASE.y + liftRight * 0.014 + tuck * 0.018 - launchStretch * 0.012 - extendForLanding * 0.024 + landingSquash * 0.016 + landingTail * 0.010,
+      FOOT_LOCAL_BASE.z + strideRight * 0.018 - tuck * 0.014 - extendForLanding * 0.028 + landingSquash * 0.012 + landingTail * 0.006,
+    );
+    this.leftFoot.rotation.set(
+      -strideLeft * deg(6.0) + liftLeft * deg(5.0) + crouch * deg(7.0) + launchStretch * deg(8.0) + tuck * deg(22.0) - extendForLanding * deg(12.0) + landingSquash * deg(7.5) + landingTail * deg(3.0) - landingRebound * deg(5.0) - this.leftLowerLeg.rotation.x * 0.36,
+      turn * deg(7.0) + strideLeft * deg(3.0) + walkSide * deg(4.0) - kneeFold * deg(2.0),
+      -turn * deg(1.5) + plantedLeft * activity * deg(0.7) - kneeFold * deg(7.0) - landingBrace * deg(2.0),
+    );
+    this.rightFoot.rotation.set(
+      -strideRight * deg(6.0) + liftRight * deg(5.0) + crouch * deg(7.0) + launchStretch * deg(8.0) + tuck * deg(21.0) - extendForLanding * deg(12.0) + landingSquash * deg(7.5) + landingTail * deg(3.0) - landingRebound * deg(5.0) - this.rightLowerLeg.rotation.x * 0.36,
+      turn * deg(7.0) + strideRight * deg(3.0) + walkSide * deg(4.0) + kneeFold * deg(2.0),
+      -turn * deg(1.5) - plantedRight * activity * deg(0.7) + kneeFold * deg(7.0) + landingBrace * deg(2.0),
+    );
+
+    this.#animateHeadSprout(walkSide, walkForward, turn, rising, falling, apex, tuck, this.landingAmount, this.takeoffAmount);
   }
 
-  #updateBlink(dt) {
-    this.blinkTimer -= dt;
+  // --- Порт _animate_head_sprout(...) ---
+
+  #animateHeadSprout(walkSide, walkForward, turn, rising, falling, apex, tuck, landing, takeoff) {
+    const idleSway = sin(this.animationTime * 1.85) * deg(1.6);
+    const walkSway = sin(this.turnPhase * 1.15) * this.walkActivity * deg(5.0);
+    const spring = takeoff * deg(-10.0) + rising * deg(-4.0) + falling * deg(9.0) + landing * deg(13.0);
+    const sideSway = -walkSide * deg(8.5) - turn * deg(7.0) + idleSway + walkSway;
+    const forwardSway = -walkForward * deg(2.5) + spring;
+
+    this.sproutRoot.position.set(0, 0.348 + takeoff * 0.014 + apex * 0.010 - landing * 0.024, -0.010);
+    this.sproutRoot.rotation.set(forwardSway, 0, sideSway);
+    this.sproutStem.rotation.set(0, 0, deg(1.0) + sideSway * 0.22);
+
+    const leafFlutter = sin(this.animationTime * 3.4 + this.turnPhase * 0.35) * deg(1.15);
+    const stretch = takeoff * deg(4.0) - apex * deg(2.5);
+    const landingFold = landing * deg(6.0);
+    const airSpread = tuck * deg(2.5);
+
+    this.leftSproutLeaf.rotation.set(
+      falling * deg(2.0),
+      deg(-6.0) - sideSway * 0.24,
+      deg(-39.0) + sideSway * 0.46 - leafFlutter - stretch - airSpread + landingFold,
+    );
+    this.rightSproutLeaf.rotation.set(
+      falling * deg(2.0),
+      deg(6.0) - sideSway * 0.24,
+      deg(39.0) + sideSway * 0.46 + leafFlutter + stretch + airSpread - landingFold,
+    );
+  }
+
+  // --- Порт _animate_eyes(delta) ---
+
+  #animateEyes(delta, lookTarget) {
+    this.#updateSunGaze(delta);
+    this.blinkTimer -= delta;
     if (this.blinkTimer <= 0) {
-      this.blinkTimer = BLINK_MIN + Math.abs(Math.sin(this.animationTime * 0.73 + 0.31)) * BLINK_VARIATION;
-      if (!this.blinkClosing && this.blinkHoldTimer <= 0 && this.blinkAmount <= 0.35) {
-        this.blinkClosing = true;
+      this.blinkTimer = this.#nextBlinkInterval();
+      if (this.#sunBlinkIntensity() > 0 || !lookTarget) this.#startBlink();
+    }
+    this.#updateBlinkCycle(delta);
+
+    this.eyeDartTimer -= delta;
+    if (this.eyeDartTimer <= 0) {
+      if (lookTarget) {
+        this.eyeDartTimer = 0.55 + abs(sin(this.animationTime * 1.9)) * 0.55;
+        this.eyeDart.set(0, 0);
+      } else {
+        this.eyeDartTimer = 1.6 + abs(sin(this.animationTime * 1.9)) * 1.4;
+        this.eyeDart.set(sin(this.animationTime * 8.1), cos(this.animationTime * 6.4)).multiplyScalar(0.10);
       }
     }
 
+    const targetFocus = this.#targetEyeFocus(lookTarget);
+    targetFocus.x += clamp(this.turnIntensity * 0.18 + this.turnYawError * 0.10, -0.24, 0.24);
+    const idleDartWeight = lookTarget ? 0 : 0.30;
+    targetFocus.add(this.eyeDart.clone().multiplyScalar(idleDartWeight));
+    this.eyeFocus.lerp(targetFocus, 1 - exp(-9 * delta));
+
+    const idleAmount = 1 - this.gazeActivity;
+    const eyeIdle = new THREE.Vector2(sin(this.animationTime * 0.55) * 0.010, sin(this.animationTime * 0.75) * 0.006).multiplyScalar(idleAmount);
+    const focus = this.eyeFocus.clone().add(eyeIdle);
+    const eyeShiftX = lerp(0.040, 0.105, this.gazeActivity);
+    const eyeShiftY = lerp(0.022, 0.060, this.gazeActivity);
+    const eyeShiftZ = lerp(0.006, 0.018, this.gazeActivity);
+    const convergence = this.gazeActivity * 0.018;
+    const eyeOffset = new THREE.Vector3(focus.x * eyeShiftX, focus.y * eyeShiftY, -0.030 - abs(focus.x) * eyeShiftZ);
+    this.leftEye.position.set(LEFT_EYE_BASE.x + eyeOffset.x + convergence, LEFT_EYE_BASE.y + eyeOffset.y, LEFT_EYE_BASE.z + eyeOffset.z);
+    this.rightEye.position.set(RIGHT_EYE_BASE.x + eyeOffset.x - convergence, RIGHT_EYE_BASE.y + eyeOffset.y, RIGHT_EYE_BASE.z + eyeOffset.z);
+
+    const glint = new THREE.Vector3(-0.014 + focus.x * 0.006, 0.014 + focus.y * 0.004, -0.014);
+    this.leftGlint.position.copy(this.leftEye.position).add(glint);
+    this.rightGlint.position.copy(this.rightEye.position).add(glint);
+    this.#applyEyeScale();
+  }
+
+  #startBlink() {
+    if (this.blinkClosing || this.blinkHoldTimer > 0 || this.blinkAmount > 0.35) return;
+    this.blinkClosing = true;
+  }
+
+  #updateBlinkCycle(delta) {
+    const sunIntensity = this.#sunBlinkIntensity();
     if (this.blinkClosing) {
-      this.blinkAmount = Math.min(this.blinkAmount + dt * BLINK_CLOSE_SPEED, 1);
+      const closeSpeed = lerp(BLINK_CLOSE_SPEED, SUN_BLINK_CLOSE_SPEED, sunIntensity);
+      this.blinkAmount = minf(this.blinkAmount + delta * closeSpeed, 1);
       if (this.blinkAmount >= 1) {
         this.blinkClosing = false;
-        this.blinkHoldTimer = BLINK_HOLD_SECONDS;
+        this.blinkHoldTimer = lerp(BLINK_HOLD_SECONDS, SUN_BLINK_HOLD_SECONDS, sunIntensity);
       }
       return;
     }
     if (this.blinkHoldTimer > 0) {
-      this.blinkHoldTimer = Math.max(this.blinkHoldTimer - dt, 0);
+      this.blinkHoldTimer = maxf(this.blinkHoldTimer - delta, 0);
       return;
     }
-    this.blinkAmount = Math.max(this.blinkAmount - dt * BLINK_OPEN_SPEED, 0);
+    const openSpeed = lerp(BLINK_OPEN_SPEED, SUN_BLINK_OPEN_SPEED, sunIntensity);
+    this.blinkAmount = maxf(this.blinkAmount - delta * openSpeed, 0);
+  }
+
+  #nextBlinkInterval() {
+    const sunIntensity = this.#sunBlinkIntensity();
+    const slowInterval = BASE_BLINK_MIN + abs(sin(this.animationTime * 0.73 + 0.31)) * BASE_BLINK_VARIATION;
+    const fastInterval = SUN_BLINK_MIN + abs(sin(this.animationTime * 1.47 + 1.2)) * SUN_BLINK_VARIATION;
+    return lerp(slowInterval, fastInterval, sunIntensity);
+  }
+
+  #applyEyeScale() {
+    const turnSquint = clamp(abs(this.turnIntensity) * 0.018 + this.turnActivity * 0.010, 0, 0.035);
+    const focusWiden = clamp(abs(this.eyeFocus.x) * 0.045, 0, 0.055);
+    const openScale = clamp(lerp(1, 0.08, this.blinkAmount) - turnSquint, 0.06, 1);
+    this.leftEye.scale.set(1 + focusWiden, openScale, 0.16);
+    this.rightEye.scale.set(1 + focusWiden, openScale, 0.16);
+    this.leftEyeWhite.scale.set(1, openScale, 1);
+    this.rightEyeWhite.scale.set(1, openScale, 1);
+    const glintOpen = clamp(openScale * (1 - this.blinkAmount), 0, 1);
+    this.leftGlint.scale.set(1, glintOpen, 0.10);
+    this.rightGlint.scale.set(1, glintOpen, 0.10);
+  }
+
+  #targetPresence(lookTarget) {
+    if (!lookTarget) return 0;
+    this.headRoot.updateWorldMatrix(true, false);
+    const source = this.headRoot.getWorldPosition(new THREE.Vector3());
+    const distance = source.distanceTo(lookTarget);
+    return clamp(1 - distance / EYE_LOOK_RADIUS, 0, 1);
+  }
+
+  #targetEyeFocus(lookTarget) {
+    if (!lookTarget) return new THREE.Vector2();
+    this.headRoot.updateWorldMatrix(true, false);
+    const local = this.headRoot.worldToLocal(lookTarget.clone());
+    const depth = maxf(abs(local.z), 0.25);
+    const gazeGainX = lerp(1.15, 1.85, this.#targetPresence(lookTarget));
+    const gazeGainY = lerp(0.85, 1.20, this.#targetPresence(lookTarget));
+    return new THREE.Vector2(
+      clamp(local.x / depth * gazeGainX, -1, 1),
+      clamp(local.y / depth * gazeGainY, -0.75, 0.75),
+    );
+  }
+
+  // --- Солнечный взгляд: зажмуривается, глядя на солнце (как в оригинале) ---
+
+  #updateSunGaze(delta) {
+    const lookFactor = this.#sunLookFactor();
+    if (lookFactor > 0) {
+      this.sunGazeCharge = minf(this.sunGazeCharge + lookFactor * delta / SUN_GAZE_CHARGE_SECONDS, 1);
+    } else {
+      this.sunGazeCharge = maxf(this.sunGazeCharge - delta / SUN_GAZE_DECAY_SECONDS, 0);
+    }
+  }
+
+  #sunLookFactor() {
+    if (this.sunDirection.lengthSq() < 0.0001) return 0;
+    const clampedPitch = clamp(this.externalPitch, deg(-84), deg(84));
+    const localDirection = new THREE.Vector3(0, sin(clampedPitch), -cos(clampedPitch))
+      .applyAxisAngle(Y_AXIS, this.group.rotation.y);
+    const alignment = localDirection.dot(this.sunDirection.clone().normalize());
+    return clamp((alignment - SUN_LOOK_DOT_START) / (1 - SUN_LOOK_DOT_START), 0, 1);
+  }
+
+  #sunBlinkIntensity() {
+    return clamp((this.sunGazeCharge - 0.65) / 0.35, 0, 1);
   }
 }

@@ -6,3 +6,6 @@ server.err
 SHOOTER/.godot/
 # temporary render tests
 .tmptest/
+
+# локальная заглушка three.js для node-тестов (/tmp/opencode)
+node_modules/
