@@ -12,15 +12,16 @@ const GRAVITY = 800.0 * HU_TO_GODOT;            // 20 м/с²
 const JUMP_SPEED = 268.328 * HU_TO_GODOT;       // ~6.71 м/с
 const STOP_SPEED = 100.0 * HU_TO_GODOT;         // 2.5 м/с
 const GROUND_ACCELERATE = 10.0;
-// Воздушное ускорение почти нулевое — как в CS2: страф-прыжки не дают прироста
-// скорости, баннихоп урезан (на земле скорость добирается только бегом).
-const AIR_ACCELERATE = 0.6;
+// Воздушное ускорение умеренное — как в CS2: страф-прыжки дают отклик
+// (поворот/дуга в прыжке), но потолок в воздухе (AIR_SPEED_CAP) не даёт
+// баннихопу раскручиваться до аркадных скоростей.
+const AIR_ACCELERATE = 3.0;
 const FRICTION = 4.0;
 const AIR_WISH_SPEED_CAP = 30.0 * HU_TO_GODOT;  // 0.75 м/с
 const MAX_VELOCITY = 2000.0 * HU_TO_GODOT;      // 50 м/с
-// Потолок горизонтальной скорости в воздухе: чуть выше беговой, чтобы спуск
-// с ускорения/ската не врезал в стену, но прыжки разгон не копят (CS2).
-const AIR_SPEED_CAP = MAX_SPEED * 1.05;
+// Потолок горизонтальной скорости в воздухе: чуть выше беговой — стрейфы
+// добирают небольшую долю сверх бега, но не раскручивают баннихоп (CS2).
+const AIR_SPEED_CAP = MAX_SPEED * 1.18;
 
 const SLIDE_MIN_SPEED = 170.0 * HU_TO_GODOT;    // 4.25 м/с
 const SLIDE_EXIT_SPEED = 115.0 * HU_TO_GODOT;   // 2.875 м/с
@@ -88,8 +89,8 @@ export class PlayerPhysics {
       this.isSliding = false;
       this.velocity.y -= GRAVITY * dt;
       this.#airMove(wishDir, wishSpeed, dt);
-      // Как в CS2: в прыжке скорость не копится сверх беговой — баннихоп и
-      // страф-прыжки не разгоняют; запас 5% оставляет спуск с пригорка мягким.
+      // Как в CS2: потолок в прыжке чуть выше беговой — страфы откликаются,
+      // но баннихоп не раскручивается до аркадных скоростей.
       const air = this.horizontalSpeed;
       if (air > AIR_SPEED_CAP && air > 0.001) {
         const s = AIR_SPEED_CAP / air;
