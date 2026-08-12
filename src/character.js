@@ -217,7 +217,8 @@ export class Character {
 
     this.eyeFocus = new THREE.Vector2();
     this.headHidden = false;
-    this.headHiddenMaterials = new Map();
+    this.armsHidden = false;
+    this.hiddenOwnerMaterials = new Map();
     this.#build();
   }
 
@@ -238,13 +239,28 @@ export class Character {
    * а в карту теней они попадают. Контуры (castShadow=false) прячем целиком.
    */
   hideHeadForOwner(hidden) {
-    if (hidden === this.headHidden) return;
-    this.headHidden = hidden;
-    this.headRoot.traverse(o => {
+    this.#hideFromOwner(this.headRoot, hidden, 'headHidden');
+  }
+
+  /** Руки тоже прячем от владельца: от первого лица видны только canvas-руки
+   * (hands.js), а 3D-руки фигуры торчат снизу и мешают. Чужим — видны. */
+  hideArmsForOwner(hidden) {
+    this.#hideFromOwner(this.leftArm, hidden, 'armsHidden');
+    this.#hideFromOwner(this.rightArm, hidden, 'armsHidden');
+  }
+
+  /** Скрыть поддерево для владельца (камера первого лица): детали, отбрасывающие
+   * тень, становятся прозрачными (тень остаётся), контуры прячем целиком.
+   * Повторный вызов с тем же состоянием игнорируется — иначе в мапу ляжет уже
+   * прозрачный материал и восстановление вернёт его же. */
+  #hideFromOwner(root, hidden, stateKey) {
+    if (hidden === this[stateKey]) return;
+    this[stateKey] = hidden;
+    root.traverse(o => {
       if (!o.isMesh) return;
       if (hidden) {
         if (o.castShadow) {
-          this.headHiddenMaterials.set(o, o.material);
+          this.hiddenOwnerMaterials.set(o, o.material);
           o.material = new THREE.MeshStandardMaterial({
             transparent: true, opacity: 0, depthWrite: false,
           });
@@ -252,9 +268,9 @@ export class Character {
           o.visible = false;
         }
       } else {
-        if (this.headHiddenMaterials.has(o)) {
-          o.material = this.headHiddenMaterials.get(o);
-          this.headHiddenMaterials.delete(o);
+        if (this.hiddenOwnerMaterials.has(o)) {
+          o.material = this.hiddenOwnerMaterials.get(o);
+          this.hiddenOwnerMaterials.delete(o);
         }
         o.visible = true;
       }

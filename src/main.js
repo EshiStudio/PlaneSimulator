@@ -50,6 +50,7 @@ scene.add(plane.group);
 const character = new Character();
 character.setHeight(CHARACTER_HEIGHT);
 character.hideHeadForOwner(true);   // камера стоит внутри головы
+character.hideArmsForOwner(true);   // от первого лица видны только canvas-руки
 scene.add(character.group);
 character.group.position.set(
   plane.group.position.x + START_OFFSET.x,

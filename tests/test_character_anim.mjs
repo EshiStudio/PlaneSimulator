@@ -81,5 +81,26 @@ c.headRoot.traverse(o => {
 });
 ok(restored, 'head materials restored on unhide');
 
+// hideArmsForOwner: руки 3D-фигуры не видны владельцу (тень остаётся),
+// у чужих руки на месте.
+const armParts = [c.leftArm, c.rightArm];
+let armShadow = 0, armHidden = 0, armOutline = 0;
+c.hideArmsForOwner(true);
+for (const arm of armParts) arm.traverse(o => {
+  if (!o.isMesh) return;
+  if (o.castShadow) { armShadow++; if (o.material.transparent && o.material.opacity === 0) armHidden++; }
+  else if (!o.visible) armOutline++;
+});
+console.log(`arms: castShadow meshes=${armShadow}, hidden=${armHidden}, hidden outlines=${armOutline}`);
+ok(armShadow > 0 && armShadow === armHidden, 'all shadow-casting arm meshes hidden for owner');
+ok(armOutline > 0, 'arm outlines hidden for owner');
+c.hideArmsForOwner(false);
+let armsRestored = true;
+for (const arm of armParts) arm.traverse(o => {
+  if (!o.isMesh) return;
+  if (o.material.transparent && o.material.opacity === 0) armsRestored = false;
+});
+ok(armsRestored, 'arm materials restored on unhide');
+
 console.log(failures === 0 ? 'ALL TESTS PASSED' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
