@@ -1,6 +1,6 @@
 // Точка входа: связывает сцену, самолёт, персонажа и ввод, крутит главный цикл.
 import * as THREE from 'three';
-import { scene, camera, renderer, updateGround, updateSun, SUN_DIRECTION, makeBlob, updateBlob } from './scene.js';
+import { scene, camera, renderer, updateGround, updateSun, SUN_DIRECTION } from './scene.js';
 import { view, updateFirstPersonCamera, updateCameraLean } from './camera.js';
 import { Plane } from './plane.js';
 import { Character, EYE_LOOK_RADIUS } from './character.js';
@@ -59,10 +59,6 @@ character.group.position.set(
 );
 character.faceTowards(plane.group.position.x, plane.group.position.z);
 view.yaw = character.group.rotation.y;
-
-// Блоб-тени (как в оригинале SHOOTER): пятна на земле вместо теневых карт.
-const characterBlob = makeBlob(0.62);
-const planeBlob = makeBlob(2.3, 1.5, 0.9);   // овал под фюзеляжем и крыльями
 
 const hands = new Hands();
 const player = new PlayerPhysics();
@@ -162,7 +158,6 @@ function leaveNet() {
 // головы, сидение в кабине.
 const remoteChars = new Map();   // key ('host' у гостя / peerId у хоста) -> { char, target }
 const remoteWorld = new THREE.Vector3();
-const blobWorld = new THREE.Vector3();
 const remoteHead = new THREE.Vector3();
 const candidateHead = new THREE.Vector3();
 
@@ -172,8 +167,6 @@ function createRemoteCharacter() {
   c.hideHeadForOwner(false);   // чужие видны целиком, со своей головой
   scene.add(c.group);
   c.group.visible = false;     // до первого снапшота
-  c.blob = makeBlob(0.62);     // своя блоб-тень у каждой фигуры
-  c.blob.visible = false;
   return c;
 }
 
@@ -197,9 +190,8 @@ function eyeTargetFor(rc) {
 function updateRemoteChar(rc, dt) {
   const t = rc.target;
   const g = rc.char.group;
-  if (!t) { g.visible = false; rc.char.blob.visible = false; return; }
+  if (!t) { g.visible = false; return; }
   g.visible = true;
-  rc.char.blob.visible = true;
   if (t.seated) {
     // Владелец сидит в кабине: фигура привязана к самолёту, корпус крутится
     // за наводкой стрелка.
@@ -227,9 +219,6 @@ function updateRemoteChar(rc, dt) {
   rc.char.externalPitch = rc.headPitch;
   rc.char.stanceAmount = t.stance ?? 0;   // присед при скольжении, как у своего
   rc.char.sunDirection.copy(SUN_DIRECTION);
-  // Тень фигуры следует за ней по земле, сжимается при подъёме (крыло/прыжок).
-  const w = g.getWorldPosition(remoteWorld);
-  updateBlob(rc.char.blob, w.x, w.z, w.y);
   // Глаза как в оригинале: следят за ближайшим персонажем («взгляд в глаза»),
   // иначе блуждают; моргание и щурение на солнце — те же, что у своего.
   rc.char.update(dt, eyeTargetFor(rc));
@@ -574,11 +563,6 @@ function animate() {
   character.sunDirection.copy(SUN_DIRECTION);
   character.update(dt, null);
   updateFirstPersonCamera(character.eyePosition(eye));
-  // Блоб-тени: свой персонаж (высота над землёй сжимает пятно в прыжке/на
-  // крыле) и самолёт — всегда по центру фюзеляжа.
-  character.group.getWorldPosition(blobWorld);
-  updateBlob(characterBlob, blobWorld.x, blobWorld.z, blobWorld.y);
-  updateBlob(planeBlob, plane.group.position.x, plane.group.position.z, 0);
   if (__dbg) {
     try {
       const pos = character.group.position;

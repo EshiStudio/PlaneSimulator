@@ -17,9 +17,8 @@ const pixelRatio = () => Math.min(devicePixelRatio, 2);
 export const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(pixelRatio());
-// Тени — блоб-пятна под фигурами (см. makeBlob): теневые карты не рендерятся
-// вообще, поэтому ни «мыльных» PCF-размытий, ни просадок FPS от shadow map.
-renderer.shadowMap.enabled = false;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
@@ -33,6 +32,15 @@ export const SUN_DIRECTION = new THREE.Vector3(-0.9554, 0.2952, 0);
 
 export const sun = new THREE.DirectionalLight(0xffffff, 1.8);
 sun.position.copy(SUN_DIRECTION).multiplyScalar(35);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 100;
+sun.shadow.camera.left = -20;
+sun.shadow.camera.right = 20;
+sun.shadow.camera.top = 20;
+sun.shadow.camera.bottom = -20;
+sun.shadow.bias = -0.0005;
 scene.add(sun);
 scene.add(sun.target);
 
@@ -273,13 +281,23 @@ ground.rotation.x = -Math.PI / 2;
 ground.renderOrder = 0;
 scene.add(ground);
 
-// Прозрачная плоскость, принимавшая настоящую тень поверх процедурной сетки,
-// больше не нужна: тени стали блоб-пятнами (см. makeBlob ниже).
+// Прозрачная плоскость принимает настоящую тень поверх процедурной сетки.
+const shadowGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.32 })
+);
+shadowGround.rotation.x = -Math.PI / 2;
+shadowGround.position.y = 0.002;
+shadowGround.receiveShadow = true;
+shadowGround.renderOrder = 1;
+scene.add(shadowGround);
 
 /** Земля центрируется на камере; округление до клетки держит линии на целых координатах. */
 export function updateGround() {
   ground.position.x = Math.round(camera.position.x / CELL) * CELL;
   ground.position.z = Math.round(camera.position.z / CELL) * CELL;
+  shadowGround.position.x = ground.position.x;
+  shadowGround.position.z = ground.position.z;
   groundMat.uniforms.uCenter.value.set(ground.position.x, ground.position.z);
   // Купол неба всегда вокруг камеры: он не должен упираться в far-плоскость,
   // когда камера улетает далеко от начала координат.
@@ -296,47 +314,6 @@ export function updateSun(target) {
   );
   sun.target.position.copy(target);
   sun.target.updateMatrixWorld();
-}
-
-// --- Блоб-тени (классика: Super Mario 64, и сам оригинальный SHOOTER) ---
-// Плоское пятно с мягким краем под фигурой: одна градиентная текстура на всех,
-// ни одного теневого прохода — не «мыльная», не жрёт ничего. Чем выше объект
-// над землёй, тем меньше и бледнее пятно (якорь посадки).
-const blobCanvas = document.createElement('canvas');
-blobCanvas.width = blobCanvas.height = 64;
-{
-  const ctx = blobCanvas.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-  g.addColorStop(0, 'rgba(0,0,0,0.55)');
-  g.addColorStop(0.55, 'rgba(0,0,0,0.30)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-}
-const blobTexture = new THREE.CanvasTexture(blobCanvas);
-
-/** Плоское пятно-тень на земле. baseSize — диаметр в метрах; stretchX/Z —
- * растягивают блоб (овал для самолёта). */
-export function makeBlob(baseSize, stretchX = 1, stretchZ = 1) {
-  const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1),
-    new THREE.MeshBasicMaterial({ map: blobTexture, transparent: true, depthWrite: false, opacity: 0.38 })
-  );
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.renderOrder = 1;
-  mesh.userData.baseX = baseSize * stretchX;
-  mesh.userData.baseZ = baseSize * stretchZ;
-  scene.add(mesh);
-  return mesh;
-}
-
-/** Держит блоб под объектом; height — высота над землёй (0 — на земле). */
-export function updateBlob(blob, worldX, worldZ, height) {
-  blob.position.set(worldX, 0.01, worldZ);
-  const k = Math.min(1, Math.max(0, 1 - height / 5));
-  const s = 0.45 + 0.55 * k;
-  blob.scale.set(blob.userData.baseX * s, 1, blob.userData.baseZ * s);
-  blob.material.opacity = 0.38 * (0.35 + 0.65 * k);
 }
 
 addEventListener('resize', () => {
