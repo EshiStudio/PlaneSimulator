@@ -126,9 +126,12 @@ for (let i = 0; i < 4; i++) {
 const idleDiff = maxDiff(frames);
 
 await key('keyDown', 'w', 'KeyW');
-await sleep(600);
+await sleep(300);
+const wdbg = await send('Runtime.evaluate', { expression: `JSON.stringify(window.__dbg)`, returnByValue: true });
+console.log('walk dbg:', wdbg.result.value);
+await sleep(300);
 frames.length = 0;
-for (let i = 0; i < 4; i++) {
+for (let i = 0; i < 6; i++) {
   frames.push(await grab());
   await sleep(300);
 }
