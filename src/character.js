@@ -217,7 +217,8 @@ export class Character {
 
     this.eyeFocus = new THREE.Vector2();
     this.headHidden = false;
-    this.armsHidden = false;
+    this.leftArmHidden = false;
+    this.rightArmHidden = false;
     this.hiddenOwnerMaterials = new Map();
     this.#build();
   }
@@ -245,8 +246,8 @@ export class Character {
   /** Руки тоже прячем от владельца: от первого лица видны только canvas-руки
    * (hands.js), а 3D-руки фигуры торчат снизу и мешают. Чужим — видны. */
   hideArmsForOwner(hidden) {
-    this.#hideFromOwner(this.leftArm, hidden, 'armsHidden');
-    this.#hideFromOwner(this.rightArm, hidden, 'armsHidden');
+    this.#hideFromOwner(this.leftArm, hidden, 'leftArmHidden');
+    this.#hideFromOwner(this.rightArm, hidden, 'rightArmHidden');
   }
 
   /** Скрыть поддерево для владельца (камера первого лица): детали, отбрасывающие
