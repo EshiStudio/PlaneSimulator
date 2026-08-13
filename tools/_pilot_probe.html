@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><title>pilot probe</title></head><body>
+<pre id="out">waiting</pre>
+<script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { Plane } from '../src/plane.js';
+import { Character } from '../src/character.js';
+import { CHARACTER_HEIGHT } from '../src/constants.js';
+
+const out = document.getElementById('out');
+const log = s => { out.textContent += s + '\n'; console.log('PROBE ' + s); };
+
+const params = new URLSearchParams(location.search);
+const x = parseFloat(params.get('x') ?? '-0.20');
+const y = parseFloat(params.get('y') ?? '0.45');
+const z = parseFloat(params.get('z') ?? '1.00');
+
+try {
+  const plane = new Plane();
+  const character = new Character();
+  character.setHeight(CHARACTER_HEIGHT);
+  character.hideHeadForOwner(true);
+  plane.group.add(character.group);
+  character.group.position.set(x, y, z);
+  character.group.rotation.set(0, Math.PI, 0);
+  await plane.load('../assets/stylized_ww1_plane.glb');
+  character.update(0.016, null);
+  plane.group.updateMatrixWorld(true);
+  const eye = character.eyePosition(new THREE.Vector3());
+  const local = plane.group.worldToLocal(eye.clone());
+  log(`офсет=(${x},${y},${z}) глаза локально=(${local.x.toFixed(2)},${local.y.toFixed(2)},${local.z.toFixed(2)})`);
+
+  const dirs = {
+    'нос(+Z)': new THREE.Vector3(0, 0, 1),
+    'хвост(-Z)': new THREE.Vector3(0, 0, -1),
+    'вверх(+Y)': new THREE.Vector3(0, 1, 0),
+    'вниз(-Y)': new THREE.Vector3(0, -1, 0),
+    'вправо(+X)': new THREE.Vector3(1, 0, 0),
+    'влево(-X)': new THREE.Vector3(-1, 0, 0),
+  };
+  // Только сплошные меши — контурная Tooner-оболочка раздута и не является стеной.
+  const targets = [];
+  plane.group.traverse(node => {
+    if (!node.isMesh) return;
+    const m = Array.isArray(node.material) ? node.material[0] : node.material;
+    if (m?.name?.toLowerCase() === 'tooner') return;
+    targets.push(node);
+  });
+  const raycaster = new THREE.Raycaster();
+  for (const [name, dir] of Object.entries(dirs)) {
+    raycaster.set(eye, dir.clone());
+    raycaster.far = 8;
+    const hits = raycaster.intersectObjects(targets, false);
+    const hit = hits[0];
+    log(`луч ${name}: ${hit ? `${hit.object.name} на ${hit.distance.toFixed(2)} м` : 'чисто'}`);
+  }
+} catch (e) {
+  log('ОШИБКА ' + (e?.stack ?? e?.message ?? e));
+}
+</script>
+</body></html>

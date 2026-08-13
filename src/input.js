@@ -54,13 +54,15 @@ export function bindInput(domElement, actions) {
 
   // Мышь ведёт себя по-разному в двух режимах:
   //   пешком — pointer lock: клик захватывает курсор, поворот по movementX/Y;
-  //   в кабине — свободный курсор: камера следует за ним без захвата,
-  //   ЛКМ стреляет (как Input.MOUSE_MODE_VISIBLE + огонь в Godot).
+  //   в кабине — свободный курсор: камера следует за ним без захвата (пилот
+  //   и наводит пулемёт, и осматривается одной и той же мышью), ЛКМ стреляет
+  //   (как Input.MOUSE_MODE_VISIBLE + огонь в Godot).
   let locked = false;       // pointer lock активен (пешком)
   let dragging = false;     // временное снятие захвата — катим дельту руками
   let lastX = 0;
   let lastY = 0;
   let hasMouse = false;
+  let skipFirstMove = false; // дренируем первый баговый ивент после захвата
 
   domElement.addEventListener('pointerenter', event => {
     lastX = event.clientX;
@@ -70,7 +72,14 @@ export function bindInput(domElement, actions) {
   // В кабине курсор свободен: свободная наводка пулемёта.
   document.addEventListener('mousemove', event => {
     if (locked) {
-      turnView(event.movementX * VIEW_YAW_SENSITIVITY, event.movementY * VIEW_PITCH_SENSITIVITY);
+      // Пропускаем первый ивент после захвата: браузер иногда шлёт
+      // огромный спайк-дельту в момент появления pointer lock.
+      if (skipFirstMove) { skipFirstMove = false; return; }
+      // Браузерный баг Pointer Lock в Windows/Chrome: иногда движение мыши
+      // даёт огромный спайк (равный координатам на экране). Ограничиваем его.
+      const mx = Math.sign(event.movementX) * Math.min(Math.abs(event.movementX), 100);
+      const my = Math.sign(event.movementY) * Math.min(Math.abs(event.movementY), 100);
+      turnView(mx * VIEW_YAW_SENSITIVITY, my * VIEW_PITCH_SENSITIVITY);
       domElement.classList.add('pointer-locked');
       return;
     }
@@ -89,8 +98,11 @@ export function bindInput(domElement, actions) {
         lastY = event.clientY;
         return;
       }
-      const dx = event.clientX - lastX;
-      const dy = event.clientY - lastY;
+      // Ограничиваем рывок, если мышь ушла за окно и вернулась с другими координатами
+      const rawDx = event.clientX - lastX;
+      const rawDy = event.clientY - lastY;
+      const dx = Math.sign(rawDx) * Math.min(Math.abs(rawDx), 150);
+      const dy = Math.sign(rawDy) * Math.min(Math.abs(rawDy), 150);
       lastX = event.clientX;
       lastY = event.clientY;
       turnView(dx * VIEW_YAW_SENSITIVITY, dy * VIEW_PITCH_SENSITIVITY);
@@ -128,7 +140,27 @@ export function bindInput(domElement, actions) {
     locked = document.pointerLockElement === domElement;
     domElement.classList.toggle('pointer-locked', locked);
     domElement.classList.toggle('dragging', !locked && dragging);
+    if (locked) {
+      // Сбрасываем флаг мыши и пропускаем первый ивент чтобы избежать
+      // резкого рывка камеры в момент захвата.
+      hasMouse = false;
+      skipFirstMove = true;
+    }
   });
+
+  document.addEventListener('pointerlockerror', () => {
+    // Если браузер отказал в захвате — принудительно сбрасываем флаги.
+    locked = false;
+    dragging = false;
+  });
+
+  // Автоматически запрашиваем pointer lock при первом клике на canvas
+  // (чтобы пользователь не видел висящий курсор в центре экрана).
+  domElement.addEventListener('click', () => {
+    if (!locked && !actions.isSeated?.()) {
+      domElement.requestPointerLock();
+    }
+  }, { once: false });
 
   domElement.addEventListener('pointerup', stopDrag);
   domElement.addEventListener('pointercancel', stopDrag);

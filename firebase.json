@@ -1,0 +1,21 @@
+{
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      ".github/**",
+      "**/.*",
+      "**/node_modules/**",
+      "README.md",
+      "MEMORY.md",
+      "server.log",
+      "server.err",
+      "tools/**",
+      "SHOOTER/**",
+      "cheracter/**",
+      "*.png",
+      "*.jpg"
+    ]
+  }
+}

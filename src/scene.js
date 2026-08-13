@@ -299,10 +299,10 @@ shadowGround.receiveShadow = true;
 shadowGround.renderOrder = 1;
 scene.add(shadowGround);
 
-/** Земля центрируется на камере; округление до клетки держит линии на целых координатах. */
+/** Земля центрируется на камере; округление до крупной сетки держит все линии на местах без рывков. */
 export function updateGround() {
-  ground.position.x = Math.round(camera.position.x / CELL) * CELL;
-  ground.position.z = Math.round(camera.position.z / CELL) * CELL;
+  ground.position.x = Math.round(camera.position.x / MAJOR) * MAJOR;
+  ground.position.z = Math.round(camera.position.z / MAJOR) * MAJOR;
   shadowGround.position.x = ground.position.x;
   shadowGround.position.z = ground.position.z;
   groundMat.uniforms.uCenter.value.set(ground.position.x, ground.position.z);
